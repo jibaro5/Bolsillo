@@ -80,45 +80,56 @@ async function sheetRead() {
   const data = await res.json();
   return data.expenses || [];
 }
+async function parseJsonSafe(res) {
+  try { return await res.json(); } catch { return null; }
+}
 async function sheetAppend(expense) {
   const owedStr = (expense.owed||[]).map(p => {
     const amt = calcOwedAmt(p, expense.amount).toFixed(2);
     return p.name ? `${p.name}: $${amt}` : `$${amt}`;
   }).join(", ");
-  await fetch(SCRIPT_URL, {
+  const res = await fetch(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action:"append", desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:owedStr }),
   });
+  if (!res.ok) throw new Error(`sheetAppend failed: ${res.status}`);
+  return parseJsonSafe(res);
 }
 async function sheetEdit(expense) {
   const owedStr = (expense.owed||[]).map(p => {
     const amt = calcOwedAmt(p, expense.amount).toFixed(2);
     return p.name ? `${p.name}: $${amt}` : `$${amt}`;
   }).join(", ");
-  await fetch(SCRIPT_URL, {
+  const res = await fetch(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action:"edit", id:String(expense.sheetId), desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:owedStr }),
   });
+  if (!res.ok) throw new Error(`sheetEdit failed: ${res.status}`);
+  return parseJsonSafe(res);
 }
 async function sheetUpdateStatus(expense) {
   const owedStr = (expense.owed||[]).map(p => {
     const amt = calcOwedAmt(p, expense.amount).toFixed(2);
     return p.name ? `${p.name}: $${amt}` : `$${amt}`;
   }).join(", ");
-  await fetch(SCRIPT_URL, {
+  const res = await fetch(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action:"update", id:String(expense.sheetId), desc:expense.desc, date:expense.date, amount:String(expense.amount), added:String(expense.added), paid:String(expense.paid), owed:owedStr }),
   });
+  if (!res.ok) throw new Error(`sheetUpdateStatus failed: ${res.status}`);
+  return parseJsonSafe(res);
 }
 async function sheetDelete(expense) {
-  await fetch(SCRIPT_URL, {
+  const res = await fetch(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action:"delete", id:String(expense.sheetId), desc:expense.desc, date:expense.date, amount:String(expense.amount) }),
   });
+  if (!res.ok) throw new Error(`sheetDelete failed: ${res.status}`);
+  return parseJsonSafe(res);
 }
 async function recurringRead() {
   const res = await fetch(`${SCRIPT_URL}?action=recurring-read`);
@@ -126,25 +137,31 @@ async function recurringRead() {
   return data.items || [];
 }
 async function recurringAppend(item) {
-  await fetch(SCRIPT_URL, {
+  const res = await fetch(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action:"recurring-append", name:item.name, amount:item.amount, day:item.day }),
   });
+  if (!res.ok) throw new Error(`recurringAppend failed: ${res.status}`);
+  return parseJsonSafe(res);
 }
 async function recurringEdit(item) {
-  await fetch(SCRIPT_URL, {
+  const res = await fetch(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action:"recurring-edit", id:String(item.sheetId), name:item.name, amount:item.amount, day:item.day }),
   });
+  if (!res.ok) throw new Error(`recurringEdit failed: ${res.status}`);
+  return parseJsonSafe(res);
 }
 async function recurringDelete(item) {
-  await fetch(SCRIPT_URL, {
+  const res = await fetch(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action:"recurring-delete", id:String(item.sheetId) }),
   });
+  if (!res.ok) throw new Error(`recurringDelete failed: ${res.status}`);
+  return parseJsonSafe(res);
 }
 
 const CATEGORIES = ["Comida","Super","Gas","Ocio","Viaje","Salud","Compras","Gastos fijos","Otro"];
@@ -172,7 +189,8 @@ export default function App() {
   const [filter, setFilter] = useState("pending");
   const [monthFilter, setMonthFilter] = useState("all");
   const [loading, setLoading] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  const [pendingSyncs, setPendingSyncs] = useState(0);
+  const syncing = pendingSyncs > 0;
   const [status, setStatus] = useState("idle");
   const [toast, setToast] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
@@ -181,8 +199,23 @@ export default function App() {
   const [tab, setTab] = useState("list");
   const [confirmBulkPaid, setConfirmBulkPaid] = useState(false);
   const descRef = useRef();
+  const syncQueueRef = useRef({});
 
   useEffect(() => { loadAll(); }, []);
+
+  // Runs `task` in the background, tracked by the `syncing` indicator.
+  // Tasks sharing the same `key` (e.g. the same expense id) are chained
+  // in order so, for example, a freshly-created expense finishes its
+  // "append" call (and picks up its real sheetId) before an edit/delete
+  // for that same expense is sent.
+  function runSync(key, task) {
+    setPendingSyncs(n => n + 1);
+    const prevTail = syncQueueRef.current[key] || Promise.resolve();
+    const run = prevTail.then(task, task);
+    syncQueueRef.current[key] = run.catch(() => {});
+    run.finally(() => setPendingSyncs(n => Math.max(0, n - 1)));
+    return run;
+  }
 
   async function loadAll() {
     setLoading(true); setStatus("idle");
@@ -241,40 +274,48 @@ export default function App() {
   function removePerson(i) { setForm(f=>({...f,owed:f.owed.filter((_,j)=>j!==i)})); }
   function updatePerson(i,k,v) { setForm(f=>({...f,owed:f.owed.map((p,j)=>j===i?{...p,[k]:v}:p)})); }
 
-  async function submitForm(e) {
+  function submitForm(e) {
     e.preventDefault();
     if (!form.desc.trim()||!form.amount) return;
     const base = parseFloat(form.amount);
     const convertedOwed = form.owed.filter(p=>p.value).map(p=>({
       name: p.name||"", type:"fixed", value:String(calcOwedAmt(p,base).toFixed(2)),
     }));
+    const isEdit = !!editId;
+    const prevExpense = isEdit ? expenses.find(x=>x.id===editId) : null;
     const expense = {
       id: editId??Date.now(),
-      sheetId: editId?(expenses.find(x=>x.id===editId)?.sheetId):null,
+      sheetId: isEdit ? prevExpense?.sheetId : null,
       desc:form.desc, amount:base, date:form.date, category:form.category, note:form.note,
       owed:convertedOwed,
-      added: editId?(expenses.find(x=>x.id===editId)?.added??false):false,
-      paid: editId?(expenses.find(x=>x.id===editId)?.paid??false):false,
+      added: isEdit ? (prevExpense?.added??false) : false,
+      paid: isEdit ? (prevExpense?.paid??false) : false,
     };
-    if (editId) {
-      setExpenses(ex=>ex.map(x=>x.id===editId?expense:x));
-      setSyncing(true);
-      try { await sheetEdit(expense); showToast("Gasto actualizado"); }
-      catch { showToast("Error al actualizar","warn"); }
-      setSyncing(false);
-      setEditId(null);
-    } else {
-      setExpenses(ex=>[expense,...ex]);
-      setSyncing(true);
-      try { await sheetAppend(expense); showToast("Guardado en Sheet"); }
-      catch { showToast("Error al guardar","warn"); }
-      setSyncing(false);
-    }
+    const snapshot = expenses;
+
+    // Optimistic update: reflect the change and close the form immediately.
+    if (isEdit) setExpenses(ex=>ex.map(x=>x.id===editId?expense:x));
+    else setExpenses(ex=>[expense,...ex]);
     setForm(EMPTY_FORM);
     setShowOwed(false);
     setShowForm(false);
+    setEditId(null);
+
+    // Sync with Google Sheets in the background.
+    runSync(expense.id, () => isEdit ? sheetEdit(expense) : sheetAppend(expense))
+      .then(result => {
+        if (!isEdit && result && result.id != null) {
+          setExpenses(ex=>ex.map(x=>x.id===expense.id?{...x,sheetId:result.id}:x));
+        }
+        showToast(isEdit?"Gasto actualizado":"Guardado en Sheet");
+      })
+      .catch(err => {
+        console.error(err);
+        setExpenses(snapshot);
+        showToast(isEdit?"Error al actualizar":"Error al guardar","warn");
+      });
   }
- async function addRecurringToList(rec) {
+  function addRecurringToList(rec) {
     const expense = {
       id: Date.now(),
       sheetId: null,
@@ -287,81 +328,126 @@ export default function App() {
       added: false,
       paid: false,
     };
+    const snapshot = expenses;
     setExpenses(ex=>[expense,...ex]);
-    setSyncing(true);
-    try { await sheetAppend(expense); showToast(`${rec.name} agregado`); }
-    catch { showToast("Error al guardar","warn"); }
-    setSyncing(false);
+    runSync(expense.id, () => sheetAppend(expense))
+      .then(result => {
+        if (result && result.id != null) {
+          setExpenses(ex=>ex.map(x=>x.id===expense.id?{...x,sheetId:result.id}:x));
+        }
+        showToast(`${rec.name} agregado`);
+      })
+      .catch(err => {
+        console.error(err);
+        setExpenses(snapshot);
+        showToast("Error al guardar","warn");
+      });
   }
 
-  async function submitRecForm(e) {
+  function submitRecForm(e) {
     e.preventDefault();
     if (!recForm.name.trim()||!recForm.amount||!recForm.day) return;
+    const isEdit = !!editRecId;
+    const prevItem = isEdit ? recurring.find(x=>x.id===editRecId) : null;
     const item = {
       id: editRecId??Date.now(),
-      sheetId: editRecId?(recurring.find(x=>x.id===editRecId)?.sheetId):null,
+      sheetId: isEdit ? prevItem?.sheetId : null,
       name:recForm.name, amount:parseFloat(recForm.amount), day:recForm.day,
     };
-    if (editRecId) {
-      setRecurring(r=>r.map(x=>x.id===editRecId?item:x));
-      setSyncing(true);
-      try { await recurringEdit(item); showToast("Gasto fijo actualizado"); }
-      catch { showToast("Error al actualizar","warn"); }
-      setSyncing(false);
-      setEditRecId(null);
-    } else {
-      setRecurring(r=>[...r,item]);
-      setSyncing(true);
-      try { await recurringAppend(item); showToast("Gasto fijo guardado"); }
-      catch { showToast("Error al guardar","warn"); }
-      setSyncing(false);
-    }
+    const snapshot = recurring;
+
+    // Optimistic update: reflect the change and close the form immediately.
+    if (isEdit) setRecurring(r=>r.map(x=>x.id===editRecId?item:x));
+    else setRecurring(r=>[...r,item]);
     setRecForm(EMPTY_REC);
     setShowRecForm(false);
+    setEditRecId(null);
+
+    // Sync with Google Sheets in the background.
+    runSync(`rec-${item.id}`, () => isEdit ? recurringEdit(item) : recurringAppend(item))
+      .then(result => {
+        if (!isEdit && result && result.id != null) {
+          setRecurring(r=>r.map(x=>x.id===item.id?{...x,sheetId:result.id}:x));
+        }
+        showToast(isEdit?"Gasto fijo actualizado":"Gasto fijo guardado");
+      })
+      .catch(err => {
+        console.error(err);
+        setRecurring(snapshot);
+        showToast(isEdit?"Error al actualizar":"Error al guardar","warn");
+      });
   }
 
-  async function doDeleteRec() {
+  function doDeleteRec() {
     const item = confirmRecDelete;
     setConfirmRecDelete(null);
+    const snapshot = recurring;
     setRecurring(r=>r.filter(x=>x.id!==item.id));
-    setSyncing(true);
-    try { await recurringDelete(item); showToast("Eliminado"); }
-    catch { showToast("Error al eliminar","warn"); }
-    setSyncing(false);
+    runSync(`rec-${item.id}`, () => recurringDelete(item))
+      .then(() => showToast("Eliminado"))
+      .catch(err => {
+        console.error(err);
+        setRecurring(snapshot);
+        showToast("Error al eliminar","warn");
+      });
   }
 
-  async function toggleField(id, field) {
+  function toggleField(id, field) {
+    const snapshot = expenses;
     const updated = expenses.map(x=>x.id===id?{...x,[field]:!x[field]}:x);
     setExpenses(updated);
     const exp = updated.find(x=>x.id===id);
-    setSyncing(true);
-    try { await sheetUpdateStatus(exp); }
-    catch(err) { console.error(err); }
-    setSyncing(false);
+    runSync(id, () => sheetUpdateStatus(exp))
+      .catch(err => {
+        console.error(err);
+        setExpenses(snapshot);
+        showToast("Error al sincronizar","warn");
+      });
   }
 
-  async function markAllPaid() {
+  // Runs a bulk field update optimistically; if some items fail to sync,
+  // only those items are rolled back instead of the whole batch.
+  function bulkToggle(items, field, successMsg) {
+    setExpenses(ex => ex.map(x => items.some(i=>i.id===x.id) ? {...x,[field]:true} : x));
+    Promise.all(items.map(exp =>
+      runSync(exp.id, () => sheetUpdateStatus({...exp,[field]:true}))
+        .then(() => ({id:exp.id, ok:true}), () => ({id:exp.id, ok:false}))
+    )).then(results => {
+      const failedIds = new Set(results.filter(r=>!r.ok).map(r=>r.id));
+      if (failedIds.size) {
+        setExpenses(ex => ex.map(x => failedIds.has(x.id) ? {...x,[field]:false} : x));
+        showToast(`${items.length-failedIds.size} actualizados, ${failedIds.size} fallaron`,"warn");
+      } else {
+        showToast(successMsg);
+      }
+    });
+  }
+
+  function markAllPaid() {
     setConfirmBulkPaid(false);
     const unpaid = expenses.filter(e => owedForExp(e) > 0 && !e.paid);
     if (!unpaid.length) return;
-    const updated = expenses.map(x => owedForExp(x) > 0 && !x.paid ? {...x,paid:true} : x);
-    setExpenses(updated);
-    setSyncing(true);
-    try {
-      for (const exp of unpaid) await sheetUpdateStatus({...exp,paid:true});
-      showToast(`${unpaid.length} gastos marcados como pagados`);
-    } catch { showToast("Error al actualizar","warn"); }
-    setSyncing(false);
+    bulkToggle(unpaid, "paid", `${unpaid.length} gastos marcados como pagados`);
   }
 
-  async function doDelete() {
+  function markAllAdded() {
+    const pending = expenses.filter(e=>!e.added);
+    if (!pending.length) return;
+    bulkToggle(pending, "added", `${pending.length} gastos marcados como ingresados`);
+  }
+
+  function doDelete() {
     const ex = confirmDelete;
     setConfirmDelete(null);
+    const snapshot = expenses;
     setExpenses(prev=>prev.filter(x=>x.id!==ex.id));
-    setSyncing(true);
-    try { await sheetDelete(ex); showToast("Eliminado"); }
-    catch { showToast("Error al eliminar","warn"); }
-    setSyncing(false);
+    runSync(ex.id, () => sheetDelete(ex))
+      .then(() => showToast("Eliminado"))
+      .catch(err => {
+        console.error(err);
+        setExpenses(snapshot);
+        showToast("Error al eliminar","warn");
+      });
   }
 
   function startEdit(ex) {
@@ -571,8 +657,8 @@ export default function App() {
                 )}
               </div>
 
-              <button type="submit" className="btn btn-p" style={{width:"100%",padding:"13px"}} disabled={syncing}>
-                {syncing?"Guardando...":editId?"Guardar cambios":"Agregar gasto"}
+              <button type="submit" className="btn btn-p" style={{width:"100%",padding:"13px"}}>
+                {editId?"Guardar cambios":"Agregar gasto"}
               </button>
             </form>
           </div>
@@ -595,8 +681,8 @@ export default function App() {
                 <input className="inp" type="number" placeholder="Dia del mes" value={recForm.day}
                   min="1" max="31" onChange={e=>setRecForm(f=>({...f,day:e.target.value}))} required />
               </div>
-              <button type="submit" className="btn btn-p" style={{width:"100%",padding:"13px"}} disabled={syncing}>
-                {syncing?"Guardando...":editRecId?"Guardar cambios":"Agregar gasto fijo"}
+              <button type="submit" className="btn btn-p" style={{width:"100%",padding:"13px"}}>
+                {editRecId?"Guardar cambios":"Agregar gasto fijo"}
               </button>
             </form>
           </div>
@@ -784,7 +870,7 @@ export default function App() {
             })}
             {filter !== "medeben" && expenses.some(e=>!e.added) && (
               <button className="btn btn-g" style={{width:"100%",marginTop:14,borderStyle:"dashed",fontSize:12,padding:"13px"}}
-                onClick={()=>setExpenses(ex=>ex.map(e=>({...e,added:true})))}>
+                onClick={markAllAdded}>
                 Marcar todos como ingresados ({fmt(expenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0))})
               </button>
             )}
