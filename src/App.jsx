@@ -81,20 +81,23 @@ function groupByDate(list) {
 }
 function buildShareText(items) {
   const groups = groupByDate(items);
-  const lines = ["Gastos pendientes de cobro", ""];
+  const lines = ["*Gastos pendientes de cobro*", ""];
   groups.forEach(g => {
-    lines.push(`*${dayHeaderLabel(g.date,{relative:false})}* - Total: ${fmt(g.total)}`);
+    lines.push(`*${dayHeaderLabel(g.date,{relative:false})}*`);
+    lines.push("");
     g.items.forEach(ex => {
       const owedAmt = owedForExp(ex);
       const mine = ex.amount - owedAmt;
-      const debtors = (ex.owed||[]).map(p=>`${p.name||"Alguien"}: ${fmt(parseFloat(p.value)||0)}`).join(", ");
       lines.push(`${ex.desc} - ${fmt(ex.amount)}`);
-      lines.push(`  ${debtors}${debtors?", ":""}Tu: ${fmt(mine)}`);
+      (ex.owed||[]).forEach(p => {
+        lines.push(`  ${p.name||"Alguien"} debe: ${fmt(parseFloat(p.value)||0)}`);
+      });
+      lines.push(`  Omar: ${fmt(mine)}`);
+      lines.push("");
     });
-    lines.push("");
   });
   const grandTotal = items.reduce((s,e)=>s+owedForExp(e),0);
-  lines.push(`*Total a cobrar: ${fmt(grandTotal)}*`);
+  lines.push(`Tu parte: *${fmt(grandTotal)}*. ¿Te debo algo?`);
   return lines.join("\n").trim();
 }
 function getCycleInfo() {
@@ -329,6 +332,13 @@ export default function App() {
   function addPerson() { setForm(f=>({...f,owed:[...f.owed,{name:"",type:"fixed",value:""}]})); }
   function removePerson(i) { setForm(f=>({...f,owed:f.owed.filter((_,j)=>j!==i)})); }
   function updatePerson(i,k,v) { setForm(f=>({...f,owed:f.owed.map((p,j)=>j===i?{...p,[k]:v}:p)})); }
+  function pickKnownPerson(name) {
+    setForm(f => {
+      const emptyIdx = f.owed.findIndex(p=>!p.name.trim());
+      if (emptyIdx > -1) return {...f, owed: f.owed.map((p,i)=>i===emptyIdx?{...p,name}:p)};
+      return {...f, owed:[...f.owed, {name, type:"fixed", value:""}]};
+    });
+  }
 
   function submitForm(e) {
     e.preventDefault();
@@ -569,6 +579,7 @@ export default function App() {
   const nameSuggestions = qName
     ? expenseNames.filter(n=>n.toLowerCase().includes(qName) && n.toLowerCase()!==qName).slice(0,6)
     : [];
+  const knownPeople = [...new Set(expenses.flatMap(e=>(e.owed||[]).map(p=>p.name.trim())).filter(Boolean))].sort();
   const selectedTotal = meDeben.filter(e=>selectedIds.has(e.id)).reduce((s,e)=>s+owedForExp(e),0);
   const hasActiveFilters = !!(nameFilter || dateFrom || dateTo);
 
@@ -735,6 +746,14 @@ export default function App() {
                 </button>
                 {showOwed && (
                   <div style={{background:"#fffbeb",border:"1.5px solid #fde68a",borderRadius:12,padding:"14px 16px",marginTop:10}}>
+                    {knownPeople.length > 0 && (
+                      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+                        {knownPeople.map(name=>(
+                          <button key={name} type="button" className="btn btn-g btn-sm" style={{fontSize:11,padding:"5px 10px"}}
+                            onClick={()=>pickKnownPerson(name)}>{name}</button>
+                        ))}
+                      </div>
+                    )}
                     {form.owed.length===0 && (
                       <button type="button" className="btn btn-g btn-sm" onClick={addPerson} style={{fontSize:11,width:"100%"}}>+ agregar persona</button>
                     )}
