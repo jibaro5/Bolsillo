@@ -941,7 +941,10 @@ export default function App() {
           )}
 
           {filter === "medeben" && meDeben.length > 0 && (
-            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}}>
+            <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginBottom:8}}>
+              {!selectMode && (
+                <button className="btn btn-g btn-sm" onClick={()=>shareSelected(meDeben)}>Compartir todos</button>
+              )}
               <button className="btn btn-g btn-sm" onClick={()=>{setSelectMode(s=>!s);setSelectedIds(new Set());}}>
                 {selectMode?"Cancelar seleccion":"Seleccionar para compartir"}
               </button>
@@ -994,18 +997,21 @@ export default function App() {
                   return (
                     <div key={ex.id} className={`row ${fullyDone?"dim":""} ${filter==="medeben"?"owed-highlight":""}`}>
                       <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0,paddingTop:2}}>
-                        {filter==="medeben" && selectMode && (
-                          <div className={`chk amber ${selectedIds.has(ex.id)?"on":""}`} onClick={()=>toggleSelect(ex.id)}>
-                            {selectedIds.has(ex.id) && <span style={{fontSize:11,color:"#fff",fontWeight:800}}>v</span>}
+                        {filter==="medeben" && selectMode ? (
+                          <div className={`chk amber ${selectedIds.has(ex.id)?"on":""}`} style={{width:26,height:26}} onClick={()=>toggleSelect(ex.id)}>
+                            {selectedIds.has(ex.id) && <span style={{fontSize:12,color:"#fff",fontWeight:800}}>v</span>}
                           </div>
-                        )}
-                        <div className={`chk blue ${ex.added?"on":""}`} onClick={()=>toggleField(ex.id,"added")}>
-                          {ex.added && <span style={{fontSize:11,color:"#fff",fontWeight:800}}>v</span>}
-                        </div>
-                        {hasOwed && (
-                          <div className={`chk green ${ex.paid?"on":""}`} onClick={()=>toggleField(ex.id,"paid")}>
-                            {ex.paid && <span style={{fontSize:11,color:"#fff",fontWeight:800}}>v</span>}
-                          </div>
+                        ) : (
+                          <>
+                            <div className={`chk blue ${ex.added?"on":""}`} onClick={()=>toggleField(ex.id,"added")}>
+                              {ex.added && <span style={{fontSize:11,color:"#fff",fontWeight:800}}>v</span>}
+                            </div>
+                            {hasOwed && (
+                              <div className={`chk green ${ex.paid?"on":""}`} onClick={()=>toggleField(ex.id,"paid")}>
+                                {ex.paid && <span style={{fontSize:11,color:"#fff",fontWeight:800}}>v</span>}
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                       <div style={{flex:1,minWidth:0}}>
