@@ -49,6 +49,54 @@ function owedForExp(ex) {
   if (!ex.owed || !Array.isArray(ex.owed)) return 0;
   return ex.owed.reduce((s,p) => s + (parseFloat(p.value)||0), 0);
 }
+const MONTH_NAMES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+function monthLabel(monthStr) {
+  if (!monthStr) return "";
+  const [y,m] = monthStr.split("-");
+  const idx = parseInt(m,10) - 1;
+  return `${MONTH_NAMES[idx]||m} ${y}`;
+}
+const WEEKDAYS = ["Dom","Lun","Mar","Mie","Jue","Vie","Sab"];
+const MONTHS_SHORT = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+function dayHeaderLabel(dateStr, opts={}) {
+  const { relative = true } = opts;
+  const [y,m,d] = dateStr.split("-").map(Number);
+  const dt = new Date(y, m-1, d);
+  if (relative) {
+    if (dateStr === today()) return "Hoy";
+    if (dateStr === new Date(Date.now()-86400000).toISOString().slice(0,10)) return "Ayer";
+  }
+  const label = `${WEEKDAYS[dt.getDay()]} ${d} ${MONTHS_SHORT[m-1]}`;
+  return y === new Date().getFullYear() ? label : `${label} ${y}`;
+}
+function groupByDate(list) {
+  const map = new Map();
+  for (const ex of list) {
+    if (!map.has(ex.date)) map.set(ex.date, []);
+    map.get(ex.date).push(ex);
+  }
+  return [...map.entries()]
+    .sort((a,b)=>b[0].localeCompare(a[0]))
+    .map(([date,items])=>({ date, items, total: items.reduce((s,e)=>s+e.amount,0) }));
+}
+function buildShareText(items) {
+  const groups = groupByDate(items);
+  const lines = ["Gastos pendientes de cobro", ""];
+  groups.forEach(g => {
+    lines.push(`*${dayHeaderLabel(g.date,{relative:false})}* - Total: ${fmt(g.total)}`);
+    g.items.forEach(ex => {
+      const owedAmt = owedForExp(ex);
+      const mine = ex.amount - owedAmt;
+      const debtors = (ex.owed||[]).map(p=>`${p.name||"Alguien"}: ${fmt(parseFloat(p.value)||0)}`).join(", ");
+      lines.push(`${ex.desc} - ${fmt(ex.amount)}`);
+      lines.push(`  ${debtors}${debtors?", ":""}Tu: ${fmt(mine)}`);
+    });
+    lines.push("");
+  });
+  const grandTotal = items.reduce((s,e)=>s+owedForExp(e),0);
+  lines.push(`*Total a cobrar: ${fmt(grandTotal)}*`);
+  return lines.join("\n").trim();
+}
 function getCycleInfo() {
   const now = new Date();
   const day = now.getDate();
@@ -188,6 +236,14 @@ export default function App() {
   const [showOwed, setShowOwed] = useState(false);
   const [filter, setFilter] = useState("pending");
   const [monthFilter, setMonthFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [nameFilter, setNameFilter] = useState("");
+  const [showNameSuggestions, setShowNameSuggestions] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [shareText, setShareText] = useState(null);
   const [loading, setLoading] = useState(false);
   const [pendingSyncs, setPendingSyncs] = useState(0);
   const syncing = pendingSyncs > 0;
@@ -465,6 +521,26 @@ export default function App() {
     setShowRecForm(true);
   }
 
+  function changeFilter(v) {
+    setFilter(v);
+    if (v !== "medeben") { setSelectMode(false); setSelectedIds(new Set()); }
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds(s => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function shareSelected(items) {
+    if (!items.length) return;
+    const text = buildShareText(items);
+    if (navigator.share) navigator.share({ text }).catch(()=>{});
+    else setShareText(text);
+  }
+
   const cycle = getCycleInfo();
   const cycleExpenses = expenses.filter(e => e.date >= cycle.start && e.date <= cycle.end);
   const cycleTotal = cycleExpenses.reduce((s,e)=>s+e.amount,0);
@@ -476,13 +552,25 @@ export default function App() {
   const meDeben = expenses.filter(e => owedForExp(e) > 0 && !e.paid);
   const meDebenTotal = meDeben.reduce((s,e)=>s+owedForExp(e),0);
 
-  let filtered = expenses;
-  if (filter === "medeben") filtered = meDeben;
-  else {
-    if (monthFilter !== "all") filtered = filtered.filter(e=>getMonth(e.date)===monthFilter);
-    if (filter === "pending") filtered = filtered.filter(e=>!e.added);
-    else if (filter === "added") filtered = filtered.filter(e=>e.added);
+  let filtered = filter === "medeben" ? meDeben : expenses;
+  if (filter === "pending") filtered = filtered.filter(e=>!e.added);
+  else if (filter === "added") filtered = filtered.filter(e=>e.added);
+  if (dateFrom) filtered = filtered.filter(e=>e.date >= dateFrom);
+  if (dateTo) filtered = filtered.filter(e=>e.date <= dateTo);
+  if (!dateFrom && !dateTo && monthFilter !== "all") filtered = filtered.filter(e=>getMonth(e.date)===monthFilter);
+  if (nameFilter.trim()) {
+    const q = nameFilter.trim().toLowerCase();
+    filtered = filtered.filter(e=>e.desc.toLowerCase().includes(q));
   }
+  const filteredGroups = groupByDate(filtered);
+
+  const expenseNames = [...new Set(expenses.map(e=>e.desc.trim()).filter(Boolean))];
+  const qName = nameFilter.trim().toLowerCase();
+  const nameSuggestions = qName
+    ? expenseNames.filter(n=>n.toLowerCase().includes(qName) && n.toLowerCase()!==qName).slice(0,6)
+    : [];
+  const selectedTotal = meDeben.filter(e=>selectedIds.has(e.id)).reduce((s,e)=>s+owedForExp(e),0);
+  const hasActiveFilters = !!(nameFilter || dateFrom || dateTo);
 
   const statusDot = status==="ok"?"#059669":status==="error"?"#dc2626":"#94a3b8";
 
@@ -520,6 +608,10 @@ export default function App() {
         .chk:hover{border-color:#94a3b8;transform:scale(1.05);}
         .chk.blue.on{background:#0f4c81;border-color:#0f4c81;box-shadow:0 2px 8px rgba(15,76,129,.3);}
         .chk.green.on{background:#059669;border-color:#059669;box-shadow:0 2px 8px rgba(5,150,105,.3);}
+        .chk.amber.on{background:#b45309;border-color:#b45309;box-shadow:0 2px 8px rgba(180,83,9,.3);}
+        .suggest{position:absolute;top:100%;left:0;right:0;background:#fff;border:1.5px solid #e2e8f0;border-radius:10px;margin-top:4px;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,.1);overflow:hidden;}
+        .suggest-item{padding:9px 14px;font-size:13px;cursor:pointer;}
+        .suggest-item:hover{background:#f1f5f9;}
         .card{background:#fff;border-radius:14px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.06);}
         .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:12px 24px;border-radius:12px;font-size:13px;z-index:999;animation:pop .2s ease;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.15);white-space:nowrap;}
         .tok{background:#0f4c81;color:#fff;}
@@ -586,6 +678,24 @@ export default function App() {
             <div style={{display:"flex",gap:8}}>
               <button className="btn btn-amber" style={{flex:1}} onClick={markAllPaid}>Si, todos pagados</button>
               <button className="btn btn-g" onClick={()=>setConfirmBulkPaid(false)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {shareText && (
+        <div className="modal-overlay" onClick={()=>setShareText(null)}>
+          <div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:11,letterSpacing:2,color:"#0f4c81",marginBottom:12,fontWeight:700}}>COMPARTIR</div>
+            <textarea readOnly value={shareText}
+              style={{width:"100%",minHeight:160,fontSize:12,fontFamily:"'DM Sans',sans-serif",border:"1.5px solid #e2e8f0",borderRadius:10,padding:10,marginBottom:14,resize:"vertical",color:"#0f172a"}} />
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <a className="btn btn-p" style={{textAlign:"center",textDecoration:"none"}}
+                href={`https://wa.me/?text=${encodeURIComponent(shareText)}`} target="_blank" rel="noreferrer">Abrir WhatsApp</a>
+              <a className="btn btn-g" style={{textAlign:"center",textDecoration:"none"}}
+                href={`sms:?&body=${encodeURIComponent(shareText)}`}>Enviar por SMS</a>
+              <button className="btn btn-g" onClick={()=>{navigator.clipboard?.writeText(shareText);showToast("Copiado");}}>Copiar texto</button>
+              <button className="btn btn-g" onClick={()=>setShareText(null)}>Cerrar</button>
             </div>
           </div>
         </div>
@@ -759,9 +869,9 @@ export default function App() {
           <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
             <div style={{display:"flex",background:"#e2e8f0",borderRadius:20,padding:"3px",gap:2}}>
               {[["all","Todos"],["pending","Pendientes"],["added","Ingresados"]].map(([v,l])=>(
-                <button key={v} className={`tog ${filter===v?"on":""}`} style={{padding:"6px 12px",fontSize:11}} onClick={()=>setFilter(v)}>{l}</button>
+                <button key={v} className={`tog ${filter===v?"on":""}`} style={{padding:"6px 12px",fontSize:11}} onClick={()=>changeFilter(v)}>{l}</button>
               ))}
-              <button className={`tog ${filter==="medeben"?"on-amber":""}`} style={{padding:"6px 12px",fontSize:11,display:"flex",alignItems:"center",gap:4}} onClick={()=>setFilter("medeben")}>
+              <button className={`tog ${filter==="medeben"?"on-amber":""}`} style={{padding:"6px 12px",fontSize:11,display:"flex",alignItems:"center",gap:4}} onClick={()=>changeFilter("medeben")}>
                 Me deben
                 {meDeben.length > 0 && (
                   <span style={{background:filter==="medeben"?"rgba(255,255,255,.3)":"#b45309",color:"#fff",borderRadius:20,padding:"0px 6px",fontSize:10,fontWeight:700}}>
@@ -771,14 +881,50 @@ export default function App() {
               </button>
             </div>
             {filter !== "medeben" && availableMonths.length > 1 && (
-              <select className="sel" value={monthFilter} onChange={e=>setMonthFilter(e.target.value)}
+              <select className="sel" value={monthFilter}
+                onChange={e=>{setMonthFilter(e.target.value);setDateFrom("");setDateTo("");}}
                 style={{width:"auto",padding:"7px 12px",fontSize:12,borderRadius:20}}>
                 <option value="all">Todos los meses</option>
-                {availableMonths.map(m=><option key={m} value={m}>{m}</option>)}
+                {availableMonths.map(m=><option key={m} value={m}>{monthLabel(m)}</option>)}
               </select>
             )}
+            <button className="btn btn-g btn-sm" style={{borderRadius:20,borderColor:hasActiveFilters?"#0f4c81":undefined,color:hasActiveFilters?"#0f4c81":undefined}}
+              onClick={()=>setShowFilters(s=>!s)}>
+              Filtros{hasActiveFilters?" •":""}
+            </button>
             <span style={{marginLeft:"auto",fontSize:11,color:"#94a3b8",fontWeight:500}}>{filtered.length}</span>
           </div>
+
+          {showFilters && (
+            <div className="card" style={{padding:14,marginBottom:14}}>
+              <div style={{position:"relative",marginBottom:10}}>
+                <input className="inp" placeholder="Buscar por nombre de gasto..." value={nameFilter}
+                  onChange={e=>setNameFilter(e.target.value)}
+                  onFocus={()=>setShowNameSuggestions(true)}
+                  onBlur={()=>setTimeout(()=>setShowNameSuggestions(false),150)} />
+                {showNameSuggestions && nameSuggestions.length>0 && (
+                  <div className="suggest">
+                    {nameSuggestions.map(n=>(
+                      <div key={n} className="suggest-item" onMouseDown={()=>{setNameFilter(n);setShowNameSuggestions(false);}}>{n}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:hasActiveFilters?10:0}}>
+                <div>
+                  <div style={{fontSize:10,color:"#94a3b8",marginBottom:4,fontWeight:600}}>DESDE</div>
+                  <input className="inp" type="date" value={dateFrom} onChange={e=>{setDateFrom(e.target.value);setMonthFilter("all");}} />
+                </div>
+                <div>
+                  <div style={{fontSize:10,color:"#94a3b8",marginBottom:4,fontWeight:600}}>HASTA</div>
+                  <input className="inp" type="date" value={dateTo} onChange={e=>{setDateTo(e.target.value);setMonthFilter("all");}} />
+                </div>
+              </div>
+              {hasActiveFilters && (
+                <button className="btn btn-g btn-sm" onClick={()=>{setNameFilter("");setDateFrom("");setDateTo("");}}>Limpiar filtros</button>
+              )}
+            </div>
+          )}
 
           {filter === "medeben" && meDeben.length > 0 && (
             <div className="medeben-banner">
@@ -791,6 +937,21 @@ export default function App() {
                 onClick={()=>setConfirmBulkPaid(true)}>
                 Marcar todos pagados
               </button>
+            </div>
+          )}
+
+          {filter === "medeben" && meDeben.length > 0 && (
+            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}}>
+              <button className="btn btn-g btn-sm" onClick={()=>{setSelectMode(s=>!s);setSelectedIds(new Set());}}>
+                {selectMode?"Cancelar seleccion":"Seleccionar para compartir"}
+              </button>
+            </div>
+          )}
+
+          {selectMode && selectedIds.size>0 && (
+            <div style={{background:"#0f172a",color:"#fff",borderRadius:12,padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,boxShadow:"0 8px 24px rgba(0,0,0,.15)"}}>
+              <div style={{fontSize:12}}>{selectedIds.size} seleccionados · {fmt(selectedTotal)}</div>
+              <button className="btn btn-p btn-sm" onClick={()=>shareSelected(meDeben.filter(e=>selectedIds.has(e.id)))}>Compartir</button>
             </div>
           )}
 
@@ -819,55 +980,68 @@ export default function App() {
                 <div style={{color:"#cbd5e1"}}>{filter==="medeben"?"Nadie te debe nada":"Sin gastos aqui."}</div>
               </div>
             )}
-            {filtered.map(ex => {
-              const owedAmt = owedForExp(ex);
-              const hasOwed = owedAmt > 0;
-              const fullyDone = ex.added && (!hasOwed || ex.paid);
-              const inCycle = ex.date >= cycle.start && ex.date <= cycle.end;
-              return (
-                <div key={ex.id} className={`row ${fullyDone?"dim":""} ${filter==="medeben"?"owed-highlight":""}`}>
-                  <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0,paddingTop:2}}>
-                    <div className={`chk blue ${ex.added?"on":""}`} onClick={()=>toggleField(ex.id,"added")}>
-                      {ex.added && <span style={{fontSize:11,color:"#fff",fontWeight:800}}>v</span>}
-                    </div>
-                    {hasOwed && (
-                      <div className={`chk green ${ex.paid?"on":""}`} onClick={()=>toggleField(ex.id,"paid")}>
-                        {ex.paid && <span style={{fontSize:11,color:"#fff",fontWeight:800}}>v</span>}
-                      </div>
-                    )}
-                  </div>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
-                      <div style={{fontSize:14,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ex.desc}</div>
-                      {ex.category && <span style={{fontSize:11,color:"#64748b",flexShrink:0,background:"#f1f5f9",padding:"2px 6px",borderRadius:4}}>{catDisplay(ex.category)}</span>}
-                    </div>
-                    <div style={{fontSize:11,color:"#94a3b8",display:"flex",flexWrap:"wrap",gap:5,alignItems:"center"}}>
-                      <span>{ex.date}</span>
-                      {inCycle && filter!=="medeben" && <span className="badge badge-blue" style={{fontSize:9}}>ciclo actual</span>}
-                      {hasOwed && !ex.paid && <span className="badge badge-amber">{(ex.owed||[]).map(p=>p.name||"Alguien").join(", ")} debe {fmt(owedAmt)}</span>}
-                      {hasOwed && ex.paid && <span className="badge badge-green">Cobrado {fmt(owedAmt)}</span>}
-                    </div>
-                    {ex.note && <div style={{fontSize:11,color:"#94a3b8",marginTop:3,fontStyle:"italic"}}>{ex.note}</div>}
-                  </div>
-                  <div style={{textAlign:"right",flexShrink:0}}>
-                    <div style={{fontSize:16,fontWeight:700}}>{fmt(ex.amount)}</div>
-                    {hasOwed && !ex.paid && <div style={{fontSize:12,color:"#b45309",fontWeight:600}}>cobras {fmt(owedAmt)}</div>}
-                    {hasOwed && <div style={{fontSize:11,color:"#059669",fontWeight:500}}>neto {fmt(ex.amount-owedAmt)}</div>}
-                    {filter !== "medeben" && (
-                      <div style={{marginTop:4}}>
-                        <span className={`badge ${ex.added?"badge-blue":"badge-gray"}`}>
-                          {ex.added?"ingresado":"pendiente"}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                  <div style={{display:"flex",flexDirection:"column",gap:4,flexShrink:0}}>
-                    <button className="btn btn-g btn-sm" style={{padding:"6px 8px"}} onClick={()=>startEdit(ex)}>E</button>
-                    <button className="btn btn-d btn-sm" style={{padding:"6px 8px"}} onClick={()=>setConfirmDelete(ex)}>D</button>
-                  </div>
+            {filteredGroups.map(group => (
+              <div key={group.date}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",margin:"18px 0 8px",padding:"0 2px"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#64748b",letterSpacing:1,textTransform:"uppercase"}}>{dayHeaderLabel(group.date)}</div>
+                  <div style={{fontSize:11,fontWeight:700,color:"#94a3b8"}}>{fmt(group.total)}</div>
                 </div>
-              );
-            })}
+                {group.items.map(ex => {
+                  const owedAmt = owedForExp(ex);
+                  const hasOwed = owedAmt > 0;
+                  const fullyDone = ex.added && (!hasOwed || ex.paid);
+                  const inCycle = ex.date >= cycle.start && ex.date <= cycle.end;
+                  return (
+                    <div key={ex.id} className={`row ${fullyDone?"dim":""} ${filter==="medeben"?"owed-highlight":""}`}>
+                      <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0,paddingTop:2}}>
+                        {filter==="medeben" && selectMode && (
+                          <div className={`chk amber ${selectedIds.has(ex.id)?"on":""}`} onClick={()=>toggleSelect(ex.id)}>
+                            {selectedIds.has(ex.id) && <span style={{fontSize:11,color:"#fff",fontWeight:800}}>v</span>}
+                          </div>
+                        )}
+                        <div className={`chk blue ${ex.added?"on":""}`} onClick={()=>toggleField(ex.id,"added")}>
+                          {ex.added && <span style={{fontSize:11,color:"#fff",fontWeight:800}}>v</span>}
+                        </div>
+                        {hasOwed && (
+                          <div className={`chk green ${ex.paid?"on":""}`} onClick={()=>toggleField(ex.id,"paid")}>
+                            {ex.paid && <span style={{fontSize:11,color:"#fff",fontWeight:800}}>v</span>}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                          <div style={{fontSize:14,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ex.desc}</div>
+                          {ex.category && <span style={{fontSize:11,color:"#64748b",flexShrink:0,background:"#f1f5f9",padding:"2px 6px",borderRadius:4}}>{catDisplay(ex.category)}</span>}
+                        </div>
+                        <div style={{fontSize:11,color:"#94a3b8",display:"flex",flexWrap:"wrap",gap:5,alignItems:"center"}}>
+                          <span>{ex.date}</span>
+                          {inCycle && filter!=="medeben" && <span className="badge badge-blue" style={{fontSize:9}}>ciclo actual</span>}
+                          {hasOwed && !ex.paid && <span className="badge badge-amber">{(ex.owed||[]).map(p=>p.name||"Alguien").join(", ")} debe {fmt(owedAmt)}</span>}
+                          {hasOwed && ex.paid && <span className="badge badge-green">Cobrado {fmt(owedAmt)}</span>}
+                        </div>
+                        {ex.note && <div style={{fontSize:11,color:"#94a3b8",marginTop:3,fontStyle:"italic"}}>{ex.note}</div>}
+                      </div>
+                      <div style={{textAlign:"right",flexShrink:0}}>
+                        <div style={{fontSize:16,fontWeight:700}}>{fmt(ex.amount)}</div>
+                        {hasOwed && !ex.paid && <div style={{fontSize:12,color:"#b45309",fontWeight:600}}>cobras {fmt(owedAmt)}</div>}
+                        {hasOwed && <div style={{fontSize:11,color:"#059669",fontWeight:500}}>neto {fmt(ex.amount-owedAmt)}</div>}
+                        {filter !== "medeben" && (
+                          <div style={{marginTop:4}}>
+                            <span className={`badge ${ex.added?"badge-blue":"badge-gray"}`}>
+                              {ex.added?"ingresado":"pendiente"}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <div style={{display:"flex",flexDirection:"column",gap:4,flexShrink:0}}>
+                        <button className="btn btn-g btn-sm" style={{padding:"6px 8px"}} onClick={()=>startEdit(ex)}>E</button>
+                        <button className="btn btn-d btn-sm" style={{padding:"6px 8px"}} onClick={()=>setConfirmDelete(ex)}>D</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
             {filter !== "medeben" && expenses.some(e=>!e.added) && (
               <button className="btn btn-g" style={{width:"100%",marginTop:14,borderStyle:"dashed",fontSize:12,padding:"13px"}}
                 onClick={markAllAdded}>
@@ -934,11 +1108,11 @@ export default function App() {
                 <div key={month} className="card" style={{marginBottom:12}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14}}>
                     <div>
-                      <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700}}>{month}</div>
+                      <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700}}>{monthLabel(month)}</div>
                       {diffPct !== null && (
                         <div style={{display:"flex",alignItems:"center",gap:4,marginTop:4}}>
                           <span style={{fontSize:12,fontWeight:700,color:diff>0?"#dc2626":"#059669"}}>{diff>0?"^":"v"} {fmt(Math.abs(diff))}</span>
-                          <span style={{fontSize:11,color:"#94a3b8"}}>({diffPct}% {diff>0?"mas":"menos"} que {prevMonth})</span>
+                          <span style={{fontSize:11,color:"#94a3b8"}}>({diffPct}% {diff>0?"mas":"menos"} que {monthLabel(prevMonth)})</span>
                         </div>
                       )}
                     </div>
