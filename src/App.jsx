@@ -81,7 +81,7 @@ function groupByDate(list) {
 }
 function buildShareText(items) {
   const groups = groupByDate(items);
-  const lines = ["*Gastos pendientes de cobro*", ""];
+  const lines = ["*Pa' cuadrar*", ""];
   groups.forEach(g => {
     lines.push(`*${dayHeaderLabel(g.date,{relative:false})}*`);
     lines.push("");
@@ -96,8 +96,18 @@ function buildShareText(items) {
       lines.push("");
     });
   });
-  const grandTotal = items.reduce((s,e)=>s+owedForExp(e),0);
-  lines.push(`Tu parte: *${fmt(grandTotal)}*. ¿Te debo algo?`);
+  const personTotals = {};
+  items.forEach(ex => {
+    (ex.owed||[]).forEach(p => {
+      const name = p.name || "Alguien";
+      personTotals[name] = (personTotals[name]||0) + (parseFloat(p.value)||0);
+    });
+  });
+  const totalsLine = Object.entries(personTotals).map(([name,amt])=>`${name}: ${fmt(amt)}`).join(", ");
+  lines.push("*Total*");
+  lines.push(totalsLine);
+  lines.push("");
+  lines.push("¿Te debo algo?");
   return lines.join("\n").trim();
 }
 function getCycleInfo() {
@@ -247,6 +257,10 @@ export default function App() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [shareText, setShareText] = useState(null);
+  const [dismissedPeople, setDismissedPeople] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("bolsillo_dismissed_people") || "[]"); }
+    catch { return []; }
+  });
   const [loading, setLoading] = useState(false);
   const [pendingSyncs, setPendingSyncs] = useState(0);
   const syncing = pendingSyncs > 0;
@@ -337,6 +351,13 @@ export default function App() {
       const emptyIdx = f.owed.findIndex(p=>!p.name.trim());
       if (emptyIdx > -1) return {...f, owed: f.owed.map((p,i)=>i===emptyIdx?{...p,name}:p)};
       return {...f, owed:[...f.owed, {name, type:"fixed", value:""}]};
+    });
+  }
+  function dismissKnownPerson(name) {
+    setDismissedPeople(prev => {
+      const next = [...new Set([...prev, name])];
+      try { localStorage.setItem("bolsillo_dismissed_people", JSON.stringify(next)); } catch {}
+      return next;
     });
   }
 
@@ -579,7 +600,9 @@ export default function App() {
   const nameSuggestions = qName
     ? expenseNames.filter(n=>n.toLowerCase().includes(qName) && n.toLowerCase()!==qName).slice(0,6)
     : [];
-  const knownPeople = [...new Set(expenses.flatMap(e=>(e.owed||[]).map(p=>p.name.trim())).filter(Boolean))].sort();
+  const knownPeople = [...new Set(expenses.flatMap(e=>(e.owed||[]).map(p=>p.name.trim())).filter(Boolean))]
+    .filter(n=>!dismissedPeople.includes(n))
+    .sort();
   const selectedTotal = meDeben.filter(e=>selectedIds.has(e.id)).reduce((s,e)=>s+owedForExp(e),0);
   const hasActiveFilters = !!(nameFilter || dateFrom || dateTo);
 
@@ -749,8 +772,12 @@ export default function App() {
                     {knownPeople.length > 0 && (
                       <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
                         {knownPeople.map(name=>(
-                          <button key={name} type="button" className="btn btn-g btn-sm" style={{fontSize:11,padding:"5px 10px"}}
-                            onClick={()=>pickKnownPerson(name)}>{name}</button>
+                          <span key={name} style={{display:"inline-flex",alignItems:"center",gap:2,background:"#fff",border:"1.5px solid #e2e8f0",borderRadius:20,paddingLeft:10}}>
+                            <button type="button" onClick={()=>pickKnownPerson(name)}
+                              style={{background:"none",border:"none",cursor:"pointer",fontSize:11,fontWeight:600,color:"#374151",padding:"5px 0"}}>{name}</button>
+                            <button type="button" onClick={()=>dismissKnownPerson(name)} title="Quitar sugerencia"
+                              style={{background:"#f1f5f9",border:"none",borderRadius:"50%",width:18,height:18,margin:"0 5px",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:11,color:"#94a3b8",padding:0,flexShrink:0}}>×</button>
+                          </span>
                         ))}
                       </div>
                     )}
