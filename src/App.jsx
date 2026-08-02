@@ -346,11 +346,22 @@ export default function App() {
   function addPerson() { setForm(f=>({...f,owed:[...f.owed,{name:"",type:"fixed",value:""}]})); }
   function removePerson(i) { setForm(f=>({...f,owed:f.owed.filter((_,j)=>j!==i)})); }
   function updatePerson(i,k,v) { setForm(f=>({...f,owed:f.owed.map((p,j)=>j===i?{...p,[k]:v}:p)})); }
+  function lastSplitForPerson(name) {
+    const matches = expenses
+      .filter(e => e.amount > 0 && (e.owed||[]).some(p=>p.name===name))
+      .sort((a,b) => b.date.localeCompare(a.date));
+    if (!matches.length) return null;
+    const p = matches[0].owed.find(p=>p.name===name);
+    const pct = (parseFloat(p.value) / matches[0].amount) * 100;
+    return isFinite(pct) && pct > 0 ? Math.round(pct * 10) / 10 : null;
+  }
   function pickKnownPerson(name) {
+    const pct = lastSplitForPerson(name);
+    const newPerson = { name, type: pct!=null?"pct":"fixed", value: pct!=null?String(pct):"" };
     setForm(f => {
       const emptyIdx = f.owed.findIndex(p=>!p.name.trim());
-      if (emptyIdx > -1) return {...f, owed: f.owed.map((p,i)=>i===emptyIdx?{...p,name}:p)};
-      return {...f, owed:[...f.owed, {name, type:"fixed", value:""}]};
+      if (emptyIdx > -1) return {...f, owed: f.owed.map((p,i)=>i===emptyIdx?newPerson:p)};
+      return {...f, owed:[...f.owed, newPerson]};
     });
   }
   function dismissKnownPerson(name) {
@@ -603,6 +614,11 @@ export default function App() {
   const knownPeople = [...new Set(expenses.flatMap(e=>(e.owed||[]).map(p=>p.name.trim())).filter(Boolean))]
     .filter(n=>!dismissedPeople.includes(n))
     .sort();
+  const categoryByName = {};
+  [...expenses].sort((a,b)=>a.date.localeCompare(b.date)).forEach(e => {
+    const key = e.desc.trim().toLowerCase();
+    if (key && e.category) categoryByName[key] = e.category;
+  });
   const selectedTotal = meDeben.filter(e=>selectedIds.has(e.id)).reduce((s,e)=>s+owedForExp(e),0);
   const hasActiveFilters = !!(nameFilter || dateFrom || dateTo);
 
@@ -745,7 +761,13 @@ export default function App() {
             <form onSubmit={submitForm}>
               <div style={{display:"grid",gridTemplateColumns:"1fr 110px",gap:10,marginBottom:12}}>
                 <input ref={descRef} className="inp" placeholder="Descripcion" value={form.desc}
-                  onChange={e=>setForm(f=>({...f,desc:e.target.value}))} required />
+                  onChange={e=>{
+                    const val = e.target.value;
+                    setForm(f=>{
+                      const suggested = categoryByName[val.trim().toLowerCase()];
+                      return {...f, desc: val, category: (suggested && !f.category) ? suggested : f.category};
+                    });
+                  }} required />
                 <input className="inp" type="number" placeholder="$ Total" value={form.amount}
                   min="0.01" step="0.01" onChange={e=>setForm(f=>({...f,amount:e.target.value}))} required />
               </div>
