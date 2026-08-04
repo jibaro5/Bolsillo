@@ -27,22 +27,25 @@ function calcOwedAmt(p, total) {
 function parseOwedStr(s) {
   if (!s || String(s).trim() === "") return [];
   try {
-    return String(s).split(",").map(part => {
+    const results = [];
+    // Matches "Name: $amount" pairs even when several are run together
+    // without a separating comma (e.g. "Shel: 8.00 Devin: 3.00").
+    const pairRe = /([^:,]+):\s*\$?\s*(-?\d+(?:\.\d+)?)/g;
+    String(s).split(",").forEach(part => {
       part = part.trim();
-      if (!part) return null;
-      const colonIdx = part.lastIndexOf(":");
-      if (colonIdx > -1) {
-        const name = part.slice(0, colonIdx).trim();
-        const val = part.slice(colonIdx + 1).replace(/[$\s]/g, "").trim();
-        const num = parseFloat(val);
-        if (isNaN(num)) return null;
-        return { name, type: "fixed", value: String(num) };
+      if (!part) return;
+      const matches = [...part.matchAll(pairRe)];
+      if (matches.length) {
+        matches.forEach(m => {
+          const num = parseFloat(m[2]);
+          if (!isNaN(num)) results.push({ name: m[1].trim(), type: "fixed", value: String(num) });
+        });
+        return;
       }
-      const val = part.replace(/[$\s]/g, "");
-      const num = parseFloat(val);
-      if (isNaN(num)) return null;
-      return { name: "", type: "fixed", value: String(num) };
-    }).filter(Boolean);
+      const num = parseFloat(part.replace(/[$\s]/g, ""));
+      if (!isNaN(num)) results.push({ name: "", type: "fixed", value: String(num) });
+    });
+    return results;
   } catch { return []; }
 }
 function owedForExp(ex) {
