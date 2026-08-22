@@ -608,6 +608,7 @@ export default function App() {
     filtered = filtered.filter(e=>e.desc.toLowerCase().includes(q));
   }
   const filteredGroups = groupByDate(filtered);
+  const filteredTotal = filtered.reduce((s,e)=>s+e.amount,0);
 
   const expenseNames = [...new Set(expenses.map(e=>e.desc.trim()).filter(Boolean))];
   const qName = nameFilter.trim().toLowerCase();
@@ -963,7 +964,7 @@ export default function App() {
               onClick={()=>setShowFilters(s=>!s)}>
               Filtros{hasActiveFilters?" •":""}
             </button>
-            <span style={{marginLeft:"auto",fontSize:11,color:"#94a3b8",fontWeight:500}}>{filtered.length}</span>
+            <span style={{marginLeft:"auto",fontSize:11,color:"#94a3b8",fontWeight:500}}>{filtered.length} · {fmt(filteredTotal)}</span>
           </div>
 
           {showFilters && (
