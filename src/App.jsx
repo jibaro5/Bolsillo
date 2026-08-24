@@ -4,7 +4,15 @@ const SCRIPT_URL = "/api/sheet";
 const CLOSE_DAY = 20;
 const DUE_DAY = 17;
 
-function today() { return new Date().toISOString().slice(0,10); }
+// Local calendar date as YYYY-MM-DD. Using toISOString() here would shift to
+// tomorrow's date in the evening for any timezone behind UTC (e.g. Puerto Rico).
+function localDateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,"0");
+  const day = String(d.getDate()).padStart(2,"0");
+  return `${y}-${m}-${day}`;
+}
+function today() { return localDateStr(new Date()); }
 function fmt(n) {
   const num = parseFloat(n) || 0;
   return new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(num);
@@ -67,7 +75,9 @@ function dayHeaderLabel(dateStr, opts={}) {
   const dt = new Date(y, m-1, d);
   if (relative) {
     if (dateStr === today()) return "Hoy";
-    if (dateStr === new Date(Date.now()-86400000).toISOString().slice(0,10)) return "Ayer";
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (dateStr === localDateStr(yesterday)) return "Ayer";
   }
   const label = `${WEEKDAYS[dt.getDay()]} ${d} ${MONTHS_SHORT[m-1]}`;
   return y === new Date().getFullYear() ? label : `${label} ${y}`;
@@ -131,9 +141,9 @@ function getCycleInfo() {
   const msPerDay = 1000 * 60 * 60 * 24;
   const daysUntilDue = Math.ceil((dueDate - now) / msPerDay);
   return {
-    start: cycleStart.toISOString().slice(0,10),
-    end: cycleEnd.toISOString().slice(0,10),
-    due: dueDate.toISOString().slice(0,10),
+    start: localDateStr(cycleStart),
+    end: localDateStr(cycleEnd),
+    due: localDateStr(dueDate),
     daysUntilDue,
     isUrgent: daysUntilDue <= 5,
   };
