@@ -342,7 +342,13 @@ export default function App() {
   async function loadAll() {
     setLoading(true); setStatus("idle");
     try {
-      const [creditRows, debitRows, recItems] = await Promise.all([creditApi.read(), debitApi.read(), recurringRead()]);
+      const [creditRows, recItems] = await Promise.all([creditApi.read(), recurringRead()]);
+      // Read the Debito tab separately: until it exists in the Sheet (and the
+      // Apps Script is updated to match), this fails on its own without
+      // taking down the Discover side of the app.
+      let debitRows = [];
+      try { debitRows = await debitApi.read(); }
+      catch (err) { console.warn("Debito tab not available yet", err); }
       const normalized = [
         ...normalizeExpenseRows(creditRows, "credit"),
         ...normalizeExpenseRows(debitRows, "debit"),
