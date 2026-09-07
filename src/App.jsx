@@ -149,62 +149,66 @@ function getCycleInfo() {
   };
 }
 
-async function sheetRead() {
-  const res = await fetch(`${SCRIPT_URL}?action=read`);
-  const data = await res.json();
-  return data.expenses || [];
-}
 async function parseJsonSafe(res) {
   try { return await res.json(); } catch { return null; }
 }
-async function sheetAppend(expense) {
-  const owedStr = (expense.owed||[]).map(p => {
+function buildOwedStr(expense) {
+  return (expense.owed||[]).map(p => {
     const amt = calcOwedAmt(p, expense.amount).toFixed(2);
     return p.name ? `${p.name}: $${amt}` : `$${amt}`;
   }).join(", ");
-  const res = await fetch(SCRIPT_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action:"append", desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:owedStr }),
-  });
-  if (!res.ok) throw new Error(`sheetAppend failed: ${res.status}`);
-  return parseJsonSafe(res);
 }
-async function sheetEdit(expense) {
-  const owedStr = (expense.owed||[]).map(p => {
-    const amt = calcOwedAmt(p, expense.amount).toFixed(2);
-    return p.name ? `${p.name}: $${amt}` : `$${amt}`;
-  }).join(", ");
-  const res = await fetch(SCRIPT_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action:"edit", id:String(expense.sheetId), desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:owedStr }),
-  });
-  if (!res.ok) throw new Error(`sheetEdit failed: ${res.status}`);
-  return parseJsonSafe(res);
+// Builds {read, append, edit, updateStatus, delete} for one "expenses"-shaped
+// sheet tab, selected by the action prefix ("" = Discover, "debito-" = Debito).
+// Both tabs share the same column layout, so the same requests work for either.
+function makeExpenseApi(actionPrefix) {
+  async function read() {
+    const res = await fetch(`${SCRIPT_URL}?action=${actionPrefix}read`);
+    const data = await res.json();
+    return data.expenses || [];
+  }
+  async function append(expense) {
+    const res = await fetch(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action:`${actionPrefix}append`, desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:buildOwedStr(expense) }),
+    });
+    if (!res.ok) throw new Error(`${actionPrefix}append failed: ${res.status}`);
+    return parseJsonSafe(res);
+  }
+  async function edit(expense) {
+    const res = await fetch(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action:`${actionPrefix}edit`, id:String(expense.sheetId), desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:buildOwedStr(expense) }),
+    });
+    if (!res.ok) throw new Error(`${actionPrefix}edit failed: ${res.status}`);
+    return parseJsonSafe(res);
+  }
+  async function updateStatus(expense) {
+    const res = await fetch(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action:`${actionPrefix}update`, id:String(expense.sheetId), desc:expense.desc, date:expense.date, amount:String(expense.amount), added:String(expense.added), paid:String(expense.paid), owed:buildOwedStr(expense) }),
+    });
+    if (!res.ok) throw new Error(`${actionPrefix}update failed: ${res.status}`);
+    return parseJsonSafe(res);
+  }
+  async function del(expense) {
+    const res = await fetch(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action:`${actionPrefix}delete`, id:String(expense.sheetId), desc:expense.desc, date:expense.date, amount:String(expense.amount) }),
+    });
+    if (!res.ok) throw new Error(`${actionPrefix}delete failed: ${res.status}`);
+    return parseJsonSafe(res);
+  }
+  return { read, append, edit, updateStatus, delete: del };
 }
-async function sheetUpdateStatus(expense) {
-  const owedStr = (expense.owed||[]).map(p => {
-    const amt = calcOwedAmt(p, expense.amount).toFixed(2);
-    return p.name ? `${p.name}: $${amt}` : `$${amt}`;
-  }).join(", ");
-  const res = await fetch(SCRIPT_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action:"update", id:String(expense.sheetId), desc:expense.desc, date:expense.date, amount:String(expense.amount), added:String(expense.added), paid:String(expense.paid), owed:owedStr }),
-  });
-  if (!res.ok) throw new Error(`sheetUpdateStatus failed: ${res.status}`);
-  return parseJsonSafe(res);
-}
-async function sheetDelete(expense) {
-  const res = await fetch(SCRIPT_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action:"delete", id:String(expense.sheetId), desc:expense.desc, date:expense.date, amount:String(expense.amount) }),
-  });
-  if (!res.ok) throw new Error(`sheetDelete failed: ${res.status}`);
-  return parseJsonSafe(res);
-}
+const creditApi = makeExpenseApi("");
+const debitApi = makeExpenseApi("debito-");
+function apiFor(account) { return account === "debit" ? debitApi : creditApi; }
+
 async function recurringRead() {
   const res = await fetch(`${SCRIPT_URL}?action=recurring-read`);
   const data = await res.json();
@@ -248,6 +252,37 @@ function catDisplay(c) {
   return key ? `${CAT_EMOJI[key]} ${key}` : trimmed;
 }
 
+// Normalizes raw sheet rows into app-shaped expenses, tagging each with its
+// account ("credit" = Discover, "debit"). The local id is prefixed with the
+// account so credit/debit rows (which each number their own rows starting
+// at 1) can never collide; sheetId stays the raw row number for API calls.
+function normalizeExpenseRows(rows, account) {
+  const normalized = [];
+  for (let i = 0; i < rows.length; i++) {
+    try {
+      const e = rows[i];
+      const dateVal = e.date ? String(e.date).trim() : "";
+      if (!dateVal) continue;
+      const amt = parseAmt(e.amount);
+      if (amt === 0 && !e.desc) continue;
+      normalized.push({
+        id: `${account}-${e.id || String(Date.now()+i)}`,
+        sheetId: e.id,
+        account,
+        desc: String(e.desc||""),
+        amount: amt,
+        date: dateVal,
+        category: String(e.category||""),
+        note: String(e.note||""),
+        owed: parseOwedStr(e.owed),
+        added: account === "debit" ? true : (e.added === true || String(e.added).toUpperCase().trim() === "SI"),
+        paid: e.paid === true || String(e.paid).toUpperCase().trim() === "SI",
+      });
+    } catch(err) { console.warn("Skipping row", i, err); }
+  }
+  return normalized;
+}
+
 const EMPTY_FORM = { desc:"", amount:"", date:today(), category:"", note:"", owed:[] };
 const EMPTY_REC = { name:"", amount:"", day:"" };
 
@@ -282,6 +317,7 @@ export default function App() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [confirmRecDelete, setConfirmRecDelete] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [formAccount, setFormAccount] = useState("credit");
   const [tab, setTab] = useState("list");
   const [confirmBulkPaid, setConfirmBulkPaid] = useState(false);
   const descRef = useRef();
@@ -306,29 +342,11 @@ export default function App() {
   async function loadAll() {
     setLoading(true); setStatus("idle");
     try {
-      const [rows, recItems] = await Promise.all([sheetRead(), recurringRead()]);
-      const normalized = [];
-      for (let i = 0; i < rows.length; i++) {
-        try {
-          const e = rows[i];
-          const dateVal = e.date ? String(e.date).trim() : "";
-          if (!dateVal) continue;
-          const amt = parseAmt(e.amount);
-          if (amt === 0 && !e.desc) continue;
-          normalized.push({
-            id: e.id || String(Date.now()+i),
-            sheetId: e.id,
-            desc: String(e.desc||""),
-            amount: amt,
-            date: dateVal,
-            category: String(e.category||""),
-            note: String(e.note||""),
-            owed: parseOwedStr(e.owed),
-            added: e.added === true || String(e.added).toUpperCase().trim() === "SI",
-            paid: e.paid === true || String(e.paid).toUpperCase().trim() === "SI",
-          });
-        } catch(err) { console.warn("Skipping row", i, err); }
-      }
+      const [creditRows, debitRows, recItems] = await Promise.all([creditApi.read(), debitApi.read(), recurringRead()]);
+      const normalized = [
+        ...normalizeExpenseRows(creditRows, "credit"),
+        ...normalizeExpenseRows(debitRows, "debit"),
+      ];
       setExpenses(normalized);
       setRecurring(recItems.map((r,i) => ({
         id: r.id || String(i),
@@ -394,12 +412,14 @@ export default function App() {
     }));
     const isEdit = !!editId;
     const prevExpense = isEdit ? expenses.find(x=>x.id===editId) : null;
+    const account = isEdit ? (prevExpense?.account||"credit") : formAccount;
     const expense = {
-      id: editId??Date.now(),
+      id: editId ?? `${account}-${Date.now()}`,
       sheetId: isEdit ? prevExpense?.sheetId : null,
+      account,
       desc:form.desc, amount:base, date:form.date, category:form.category, note:form.note,
       owed:convertedOwed,
-      added: isEdit ? (prevExpense?.added??false) : false,
+      added: isEdit ? (prevExpense?.added??false) : account === "debit",
       paid: isEdit ? (prevExpense?.paid??false) : false,
     };
     const snapshot = expenses;
@@ -413,7 +433,8 @@ export default function App() {
     setEditId(null);
 
     // Sync with Google Sheets in the background.
-    runSync(expense.id, () => isEdit ? sheetEdit(expense) : sheetAppend(expense))
+    const api = apiFor(account);
+    runSync(expense.id, () => isEdit ? api.edit(expense) : api.append(expense))
       .then(result => {
         if (!isEdit && result && result.id != null) {
           setExpenses(ex=>ex.map(x=>x.id===expense.id?{...x,sheetId:result.id}:x));
@@ -428,8 +449,9 @@ export default function App() {
   }
   function addRecurringToList(rec) {
     const expense = {
-      id: Date.now(),
+      id: `credit-${Date.now()}`,
       sheetId: null,
+      account: "credit",
       desc: rec.name,
       amount: rec.amount,
       date: today(),
@@ -441,7 +463,7 @@ export default function App() {
     };
     const snapshot = expenses;
     setExpenses(ex=>[expense,...ex]);
-    runSync(expense.id, () => sheetAppend(expense))
+    runSync(expense.id, () => creditApi.append(expense))
       .then(result => {
         if (result && result.id != null) {
           setExpenses(ex=>ex.map(x=>x.id===expense.id?{...x,sheetId:result.id}:x));
@@ -508,7 +530,7 @@ export default function App() {
     const updated = expenses.map(x=>x.id===id?{...x,[field]:!x[field]}:x);
     setExpenses(updated);
     const exp = updated.find(x=>x.id===id);
-    runSync(id, () => sheetUpdateStatus(exp))
+    runSync(id, () => apiFor(exp.account).updateStatus(exp))
       .catch(err => {
         console.error(err);
         setExpenses(snapshot);
@@ -521,7 +543,7 @@ export default function App() {
   function bulkToggle(items, field, successMsg) {
     setExpenses(ex => ex.map(x => items.some(i=>i.id===x.id) ? {...x,[field]:true} : x));
     Promise.all(items.map(exp =>
-      runSync(exp.id, () => sheetUpdateStatus({...exp,[field]:true}))
+      runSync(exp.id, () => apiFor(exp.account).updateStatus({...exp,[field]:true}))
         .then(() => ({id:exp.id, ok:true}), () => ({id:exp.id, ok:false}))
     )).then(results => {
       const failedIds = new Set(results.filter(r=>!r.ok).map(r=>r.id));
@@ -542,7 +564,7 @@ export default function App() {
   }
 
   function markAllAdded() {
-    const pending = expenses.filter(e=>!e.added);
+    const pending = expenses.filter(e=>e.account!=="debit" && !e.added);
     if (!pending.length) return;
     bulkToggle(pending, "added", `${pending.length} gastos marcados como ingresados`);
   }
@@ -552,7 +574,7 @@ export default function App() {
     setConfirmDelete(null);
     const snapshot = expenses;
     setExpenses(prev=>prev.filter(x=>x.id!==ex.id));
-    runSync(ex.id, () => sheetDelete(ex))
+    runSync(ex.id, () => apiFor(ex.account).delete(ex))
       .then(() => showToast("Eliminado"))
       .catch(err => {
         console.error(err);
@@ -563,12 +585,21 @@ export default function App() {
 
   function startEdit(ex) {
     setEditId(ex.id);
+    setFormAccount(ex.account||"credit");
     setForm({desc:ex.desc, amount:String(ex.amount), date:ex.date, category:ex.category||"", note:ex.note||"", owed:ex.owed||[]});
     setShowOwed((ex.owed||[]).length > 0);
     setShowForm(true);
     setTimeout(()=>descRef.current?.focus(),100);
   }
   function cancelEdit() { setEditId(null); setForm(EMPTY_FORM); setShowOwed(false); setShowForm(false); }
+  function startAdd(account) {
+    setEditId(null);
+    setFormAccount(account);
+    setForm(EMPTY_FORM);
+    setShowOwed(false);
+    setShowForm(true);
+    setTimeout(()=>descRef.current?.focus(),200);
+  }
 
   function startEditRec(item) {
     setEditRecId(item.id);
@@ -596,18 +627,24 @@ export default function App() {
     else setShareText(text);
   }
 
+  // "Gastos"/ciclo/Resumen son exclusivos de la tarjeta Discover (credit);
+  // los gastos de debito viven aparte y solo se unen de nuevo en "Me deben".
+  const creditExpenses = expenses.filter(e => e.account !== "debit");
+  const debitExpenses = expenses.filter(e => e.account === "debit");
+
   const cycle = getCycleInfo();
-  const cycleExpenses = expenses.filter(e => e.date >= cycle.start && e.date <= cycle.end);
+  const cycleExpenses = creditExpenses.filter(e => e.date >= cycle.start && e.date <= cycle.end);
   const cycleTotal = cycleExpenses.reduce((s,e)=>s+e.amount,0);
   const cyclePending = cycleExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0);
   const totalOwed = expenses.filter(e=>!e.paid).reduce((s,e)=>s+owedForExp(e),0);
   const netCost = cycleExpenses.reduce((s,e)=>s+(e.amount-owedForExp(e)),0);
-  const months = [...new Set(expenses.map(e=>getMonth(e.date)))].sort().reverse();
-  const availableMonths = [...new Set(expenses.map(e=>getMonth(e.date)))].sort().reverse();
+  const months = [...new Set(creditExpenses.map(e=>getMonth(e.date)))].sort().reverse();
+  const availableMonths = [...new Set(creditExpenses.map(e=>getMonth(e.date)))].sort().reverse();
   const meDeben = expenses.filter(e => owedForExp(e) > 0 && !e.paid);
   const meDebenTotal = meDeben.reduce((s,e)=>s+owedForExp(e),0);
+  const debitOwedTotal = debitExpenses.filter(e=>owedForExp(e)>0 && !e.paid).reduce((s,e)=>s+owedForExp(e),0);
 
-  let filtered = filter === "medeben" ? meDeben : expenses;
+  let filtered = filter === "medeben" ? meDeben : creditExpenses;
   if (filter === "pending") filtered = filtered.filter(e=>!e.added);
   else if (filter === "added") filtered = filtered.filter(e=>e.added);
   if (dateFrom) filtered = filtered.filter(e=>e.date >= dateFrom);
@@ -619,6 +656,8 @@ export default function App() {
   }
   const filteredGroups = groupByDate(filtered);
   const filteredTotal = filtered.reduce((s,e)=>s+e.amount,0);
+  const debitGroups = groupByDate(debitExpenses);
+  const debitTotal = debitExpenses.reduce((s,e)=>s+e.amount,0);
 
   const expenseNames = [...new Set(expenses.map(e=>e.desc.trim()).filter(Boolean))];
   const qName = nameFilter.trim().toLowerCase();
@@ -769,7 +808,9 @@ export default function App() {
         <div className="overlay" onClick={cancelEdit}>
           <div className="sheet" onClick={e=>e.stopPropagation()}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-              <div style={{fontSize:16,fontWeight:700,color:editId?"#0f4c81":"#0f172a"}}>{editId?"Editar gasto":"Nuevo gasto"}</div>
+              <div style={{fontSize:16,fontWeight:700,color:editId?"#0f4c81":"#0f172a"}}>
+                {editId ? "Editar gasto" : formAccount==="debit" ? "Nuevo gasto de debito" : "Nuevo gasto"}
+              </div>
               <button className="btn btn-g btn-sm" onClick={cancelEdit}>X</button>
             </div>
             <form onSubmit={submitForm}>
@@ -943,6 +984,7 @@ export default function App() {
 
         <div style={{display:"flex",background:"#e2e8f0",borderRadius:12,padding:"4px",gap:4,marginBottom:20}}>
           <button className={`nav-tab ${tab==="list"?"on":""}`} style={{flex:1,justifyContent:"center"}} onClick={()=>setTab("list")}>Gastos</button>
+          <button className={`nav-tab ${tab==="debit"?"on":""}`} style={{flex:1,justifyContent:"center"}} onClick={()=>setTab("debit")}>Debito</button>
           <button className={`nav-tab ${tab==="recurring"?"on":""}`} style={{flex:1,justifyContent:"center"}} onClick={()=>setTab("recurring")}>Fijos</button>
           <button className={`nav-tab ${tab==="summary"?"on":""}`} style={{flex:1,justifyContent:"center"}} onClick={()=>setTab("summary")}>Resumen</button>
         </div>
@@ -1130,10 +1172,10 @@ export default function App() {
                 })}
               </div>
             ))}
-            {filter !== "medeben" && expenses.some(e=>!e.added) && (
+            {filter !== "medeben" && creditExpenses.some(e=>!e.added) && (
               <button className="btn btn-g" style={{width:"100%",marginTop:14,borderStyle:"dashed",fontSize:12,padding:"13px"}}
                 onClick={markAllAdded}>
-                Marcar todos como ingresados ({fmt(expenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0))})
+                Marcar todos como ingresados ({fmt(creditExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0))})
               </button>
             )}
             {filter === "medeben" && meDeben.length > 0 && (
@@ -1144,6 +1186,66 @@ export default function App() {
             )}
           </>}
         </>}
+
+        {tab==="debit" && (
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+              <div style={{fontSize:12,color:"#64748b",lineHeight:1.5}}>
+                Gastos de debito/efectivo. No cuentan para el ciclo de Discover, pero si suman en "Me deben".
+              </div>
+              <span style={{fontSize:11,color:"#94a3b8",fontWeight:500,whiteSpace:"nowrap",marginLeft:8}}>{debitExpenses.length} · {fmt(debitTotal)}</span>
+            </div>
+            {debitExpenses.length===0 && !loading && (
+              <div style={{textAlign:"center",padding:"60px 0",fontSize:13}}>
+                <div style={{color:"#cbd5e1"}}>Sin gastos de debito aun.</div>
+              </div>
+            )}
+            {debitGroups.map(group => (
+              <div key={group.date}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",margin:"18px 0 8px",padding:"0 2px"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#64748b",letterSpacing:1,textTransform:"uppercase"}}>{dayHeaderLabel(group.date)}</div>
+                  <div style={{fontSize:11,fontWeight:700,color:"#94a3b8"}}>{fmt(group.total)}</div>
+                </div>
+                {group.items.map(ex => {
+                  const owedAmt = owedForExp(ex);
+                  const hasOwed = owedAmt > 0;
+                  return (
+                    <div key={ex.id} className={`row ${hasOwed && ex.paid ? "dim":""}`}>
+                      {hasOwed && (
+                        <div style={{paddingTop:2}}>
+                          <div className={`chk green ${ex.paid?"on":""}`} onClick={()=>toggleField(ex.id,"paid")}>
+                            {ex.paid && <span style={{fontSize:11,color:"#fff",fontWeight:800}}>v</span>}
+                          </div>
+                        </div>
+                      )}
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                          <div style={{fontSize:14,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ex.desc}</div>
+                          {ex.category && <span style={{fontSize:11,color:"#64748b",flexShrink:0,background:"#f1f5f9",padding:"2px 6px",borderRadius:4}}>{catDisplay(ex.category)}</span>}
+                        </div>
+                        <div style={{fontSize:11,color:"#94a3b8",display:"flex",flexWrap:"wrap",gap:5,alignItems:"center"}}>
+                          <span>{ex.date}</span>
+                          {hasOwed && !ex.paid && <span className="badge badge-amber">{(ex.owed||[]).map(p=>p.name||"Alguien").join(", ")} debe {fmt(owedAmt)}</span>}
+                          {hasOwed && ex.paid && <span className="badge badge-green">Cobrado {fmt(owedAmt)}</span>}
+                        </div>
+                        {ex.note && <div style={{fontSize:11,color:"#94a3b8",marginTop:3,fontStyle:"italic"}}>{ex.note}</div>}
+                      </div>
+                      <div style={{textAlign:"right",flexShrink:0}}>
+                        <div style={{fontSize:16,fontWeight:700}}>{fmt(ex.amount)}</div>
+                        {hasOwed && !ex.paid && <div style={{fontSize:12,color:"#b45309",fontWeight:600}}>cobras {fmt(owedAmt)}</div>}
+                        {hasOwed && <div style={{fontSize:11,color:"#059669",fontWeight:500}}>neto {fmt(ex.amount-owedAmt)}</div>}
+                      </div>
+                      <div style={{display:"flex",flexDirection:"column",gap:4,flexShrink:0}}>
+                        <button className="btn btn-g btn-sm" style={{padding:"6px 8px"}} onClick={()=>startEdit(ex)}>E</button>
+                        <button className="btn btn-d btn-sm" style={{padding:"6px 8px"}} onClick={()=>setConfirmDelete(ex)}>D</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        )}
 
         {tab==="recurring" && (
           <div>
@@ -1179,13 +1281,13 @@ export default function App() {
           <div>
             {months.length===0 && <div style={{textAlign:"center",padding:"60px 0",color:"#cbd5e1",fontSize:13}}>Sin gastos para resumir.</div>}
             {months.map((month, monthIdx) => {
-              const monthExps = expenses.filter(e=>getMonth(e.date)===month);
+              const monthExps = creditExpenses.filter(e=>getMonth(e.date)===month);
               const total = monthExps.reduce((s,e)=>s+e.amount,0);
               const pending = monthExps.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0);
               const owedTotal = monthExps.reduce((s,e)=>s+owedForExp(e),0);
               const net = total - owedTotal;
               const prevMonth = months[monthIdx + 1];
-              const prevTotal = prevMonth ? expenses.filter(e=>getMonth(e.date)===prevMonth).reduce((s,e)=>s+e.amount,0) : 0;
+              const prevTotal = prevMonth ? creditExpenses.filter(e=>getMonth(e.date)===prevMonth).reduce((s,e)=>s+e.amount,0) : 0;
               const diff = total - prevTotal;
               const diffPct = prevTotal > 0 ? Math.abs(diff/prevTotal*100).toFixed(0) : null;
               const catMap = {};
@@ -1265,8 +1367,8 @@ export default function App() {
         )}
       </div>
 
-      {!showForm && !showRecForm && tab==="list" && (
-        <button className="fab" onClick={()=>{setEditId(null);setForm(EMPTY_FORM);setShowOwed(false);setShowForm(true);setTimeout(()=>descRef.current?.focus(),200);}}>+</button>
+      {!showForm && !showRecForm && (tab==="list" || tab==="debit") && (
+        <button className="fab" onClick={()=>startAdd(tab==="debit"?"debit":"credit")}>+</button>
       )}
 
       {toast && <div className={`toast ${toast.type==="warn"?"twarn":"tok"}`}>{toast.msg}</div>}
