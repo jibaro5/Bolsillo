@@ -152,6 +152,22 @@ function getCycleInfo() {
 async function parseJsonSafe(res) {
   try { return await res.json(); } catch { return null; }
 }
+// Apps Script can hang far longer than any user should have to wait on a
+// loading spinner. Every request to it goes through here so a stuck call
+// fails clearly after TIMEOUT_MS instead of spinning indefinitely.
+const TIMEOUT_MS = 20000;
+async function fetchWithTimeout(url, opts={}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...opts, signal: controller.signal });
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error(`Tiempo de espera agotado (${TIMEOUT_MS/1000}s)`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 function buildOwedStr(expense) {
   return (expense.owed||[]).map(p => {
     const amt = calcOwedAmt(p, expense.amount).toFixed(2);
@@ -163,12 +179,12 @@ function buildOwedStr(expense) {
 // Both tabs share the same column layout, so the same requests work for either.
 function makeExpenseApi(actionPrefix) {
   async function read() {
-    const res = await fetch(`${SCRIPT_URL}?action=${actionPrefix}read`);
+    const res = await fetchWithTimeout(`${SCRIPT_URL}?action=${actionPrefix}read`);
     const data = await res.json();
     return data.expenses || [];
   }
   async function append(expense) {
-    const res = await fetch(SCRIPT_URL, {
+    const res = await fetchWithTimeout(SCRIPT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action:`${actionPrefix}append`, desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:buildOwedStr(expense) }),
@@ -177,7 +193,7 @@ function makeExpenseApi(actionPrefix) {
     return parseJsonSafe(res);
   }
   async function edit(expense) {
-    const res = await fetch(SCRIPT_URL, {
+    const res = await fetchWithTimeout(SCRIPT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action:`${actionPrefix}edit`, id:String(expense.sheetId), desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:buildOwedStr(expense) }),
@@ -186,7 +202,7 @@ function makeExpenseApi(actionPrefix) {
     return parseJsonSafe(res);
   }
   async function updateStatus(expense) {
-    const res = await fetch(SCRIPT_URL, {
+    const res = await fetchWithTimeout(SCRIPT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action:`${actionPrefix}update`, id:String(expense.sheetId), desc:expense.desc, date:expense.date, amount:String(expense.amount), added:String(expense.added), paid:String(expense.paid), owed:buildOwedStr(expense) }),
@@ -195,7 +211,7 @@ function makeExpenseApi(actionPrefix) {
     return parseJsonSafe(res);
   }
   async function del(expense) {
-    const res = await fetch(SCRIPT_URL, {
+    const res = await fetchWithTimeout(SCRIPT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action:`${actionPrefix}delete`, id:String(expense.sheetId), desc:expense.desc, date:expense.date, amount:String(expense.amount) }),
@@ -210,12 +226,12 @@ const debitApi = makeExpenseApi("debito-");
 function apiFor(account) { return account === "debit" ? debitApi : creditApi; }
 
 async function recurringRead() {
-  const res = await fetch(`${SCRIPT_URL}?action=recurring-read`);
+  const res = await fetchWithTimeout(`${SCRIPT_URL}?action=recurring-read`);
   const data = await res.json();
   return data.items || [];
 }
 async function recurringAppend(item) {
-  const res = await fetch(SCRIPT_URL, {
+  const res = await fetchWithTimeout(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action:"recurring-append", name:item.name, amount:item.amount, day:item.day }),
@@ -224,7 +240,7 @@ async function recurringAppend(item) {
   return parseJsonSafe(res);
 }
 async function recurringEdit(item) {
-  const res = await fetch(SCRIPT_URL, {
+  const res = await fetchWithTimeout(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action:"recurring-edit", id:String(item.sheetId), name:item.name, amount:item.amount, day:item.day }),
@@ -233,7 +249,7 @@ async function recurringEdit(item) {
   return parseJsonSafe(res);
 }
 async function recurringDelete(item) {
-  const res = await fetch(SCRIPT_URL, {
+  const res = await fetchWithTimeout(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action:"recurring-delete", id:String(item.sheetId) }),
