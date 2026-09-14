@@ -343,13 +343,17 @@ export default function App() {
   async function loadAll() {
     setLoading(true); setStatus("idle");
     try {
-      const [creditRows, recItems] = await Promise.all([creditApi.read(), recurringRead()]);
-      // Read the Debito tab separately: until it exists in the Sheet (and the
-      // Apps Script is updated to match), this fails on its own without
-      // taking down the Discover side of the app.
-      let debitRows = [];
-      try { debitRows = await debitApi.read(); }
-      catch (err) { console.warn("Debito tab not available yet", err); }
+      // All three reads fire at once. Debito is wrapped in its own catch so a
+      // failure there (e.g. the tab not existing yet) resolves to an empty
+      // list instead of rejecting this Promise.all and taking down the
+      // Discover side of the app - without serializing it after the other two.
+      const debitPromise = debitApi.read().catch(err => {
+        console.warn("Debito tab not available yet", err);
+        return [];
+      });
+      const [creditRows, recItems, debitRows] = await Promise.all([
+        creditApi.read(), recurringRead(), debitPromise,
+      ]);
       const normalized = [
         ...normalizeExpenseRows(creditRows, "credit"),
         ...normalizeExpenseRows(debitRows, "debit"),
