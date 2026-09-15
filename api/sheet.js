@@ -1,4 +1,5 @@
-import { JWT } from "google-auth-library";
+import { sheetsFetch, getSheetGid, rowFromUpdatedRange } from "../lib/sheetsClient.js";
+import { requireAuth } from "../lib/session.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -11,34 +12,6 @@ export const config = { api: { bodyParser: true } };
 const SHEET_NAMES = { credit: "Credit Card", debit: "Debito", recurring: "Recurrentes" };
 const CATEGORIES = ["Comida","Super","Gas","Ocio","Viaje","Salud","Compras","Gastos fijos","Otro"];
 
-let cachedClient = null;
-function getClient() {
-  if (!cachedClient) {
-    cachedClient = new JWT({
-      email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      key: (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
-  }
-  return cachedClient;
-}
-
-// All requests go through here: gets a (cached/auto-refreshed) access token
-// and calls the Sheets API for this spreadsheet. `path` is appended right
-// after the spreadsheet id, e.g. "/values/A1:C1" or ":batchUpdate".
-async function sheetsFetch(path, opts = {}) {
-  const { token } = await getClient().getAccessToken();
-  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${process.env.SPREADSHEET_ID}${path}`, {
-    ...opts,
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(opts.headers||{}) },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(()=>"");
-    throw new Error(`Sheets API ${res.status}: ${text.slice(0,300)}`);
-  }
-  return res.json();
-}
-
 // Sheets' date epoch is 1899-12-30; 25569 is the day count from there to the
 // Unix epoch. UNFORMATTED_VALUE returns date cells as this kind of serial
 // number rather than a string, so this is needed to get back to YYYY-MM-DD.
@@ -49,22 +22,6 @@ function serialToDateStr(serial) {
   const m = String(d.getUTCMonth()+1).padStart(2,"0");
   const day = String(d.getUTCDate()).padStart(2,"0");
   return `${y}-${m}-${day}`;
-}
-
-// The row number a value range like "'Credit Card'!A713:G713" landed on.
-function rowFromUpdatedRange(updatedRange) {
-  const m = String(updatedRange||"").match(/![A-Z]+(\d+)/);
-  return m ? parseInt(m[1], 10) : null;
-}
-
-let gidCache = null;
-async function getSheetGid(sheetName) {
-  if (!gidCache) {
-    const meta = await sheetsFetch(`?fields=sheets.properties`);
-    gidCache = {};
-    (meta.sheets||[]).forEach(s => { gidCache[s.properties.title] = s.properties.sheetId; });
-  }
-  return gidCache[sheetName];
 }
 
 // ---- shared helpers for any "expenses"-shaped tab (Credit Card / Debito) ----
@@ -207,6 +164,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") { res.status(200).end(); return; }
+  if (!requireAuth(req, res)) return;
 
   try {
     let action, body;

@@ -152,6 +152,21 @@ function getCycleInfo() {
 async function parseJsonSafe(res) {
   try { return await res.json(); } catch { return null; }
 }
+
+// Session token for /api/sheet, held here (not in component state) since
+// fetchWithTimeout is a plain module-level function shared by every API call.
+let sessionToken = (() => { try { return localStorage.getItem("bolsillo_session"); } catch { return null; } })();
+let unauthorizedCb = null;
+function getSessionToken() { return sessionToken; }
+function setSessionToken(token) {
+  sessionToken = token;
+  try {
+    if (token) localStorage.setItem("bolsillo_session", token);
+    else localStorage.removeItem("bolsillo_session");
+  } catch {}
+}
+function onUnauthorized(cb) { unauthorizedCb = cb; }
+
 // Apps Script can hang far longer than any user should have to wait on a
 // loading spinner. Every request to it goes through here so a stuck call
 // fails clearly after TIMEOUT_MS instead of spinning indefinitely.
@@ -160,7 +175,14 @@ async function fetchWithTimeout(url, opts={}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    return await fetch(url, { ...opts, signal: controller.signal });
+    const headers = { ...(opts.headers||{}) };
+    if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
+    const res = await fetch(url, { ...opts, headers, signal: controller.signal });
+    if (res.status === 401) {
+      setSessionToken(null);
+      if (unauthorizedCb) unauthorizedCb();
+    }
+    return res;
   } catch (err) {
     if (err.name === "AbortError") throw new Error(`Tiempo de espera agotado (${TIMEOUT_MS/1000}s)`);
     throw err;
@@ -302,7 +324,7 @@ function normalizeExpenseRows(rows, account) {
 const EMPTY_FORM = { desc:"", amount:"", date:today(), category:"", note:"", owed:[] };
 const EMPTY_REC = { name:"", amount:"", day:"" };
 
-export default function App() {
+function App() {
   const [expenses, setExpenses] = useState([]);
   const [recurring, setRecurring] = useState([]);
   const [form, setForm] = useState(EMPTY_FORM);
@@ -1553,4 +1575,164 @@ export default function App() {
       {toast && <div className={`toast ${toast.type==="warn"?"twarn":"tok"}`}>{toast.msg}</div>}
     </div>
   );
+}
+
+async function authApi(action, extra={}) {
+  const res = await fetch("/api/auth", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...extra }),
+  });
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok) throw new Error(data.error || `${action} failed`);
+  return data;
+}
+
+function LoginGate({ onLogin }) {
+  const [mode, setMode] = useState("login"); // "login" | "password" | "setup"
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [passkeySupported, setPasskeySupported] = useState(true);
+  const [pwUser, setPwUser] = useState("");
+  const [pwPass, setPwPass] = useState("");
+  const [setupName, setSetupName] = useState("");
+  const [setupCode, setSetupCode] = useState("");
+  const [setupPass, setSetupPass] = useState("");
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.PublicKeyCredential) { setPasskeySupported(false); return; }
+    if (PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable) {
+      PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+        .then(setPasskeySupported).catch(()=>setPasskeySupported(false));
+    }
+  }, []);
+
+  async function handlePasskeyLogin() {
+    setBusy(true); setError("");
+    try {
+      const { startAuthentication } = await import("@simplewebauthn/browser");
+      const { options, challengeToken } = await authApi("passkey-login-options");
+      const assertionResponse = await startAuthentication({ optionsJSON: options });
+      const { token, userLabel } = await authApi("passkey-login-verify", { challengeToken, assertionResponse });
+      onLogin(token, userLabel);
+    } catch (err) {
+      setError(err.name === "NotAllowedError" ? "Cancelado o no reconocido" : (err.message || "No se pudo entrar"));
+    } finally { setBusy(false); }
+  }
+
+  async function handlePasswordLogin(e) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try {
+      const { token, userLabel } = await authApi("password-login", { userLabel: pwUser.trim(), password: pwPass });
+      onLogin(token, userLabel);
+    } catch (err) { setError(err.message === "invalid_credentials" ? "Nombre o contraseña incorrectos" : (err.message || "No se pudo entrar")); }
+    finally { setBusy(false); }
+  }
+
+  async function handleSetupPasskey() {
+    setBusy(true); setError("");
+    try {
+      const { startRegistration } = await import("@simplewebauthn/browser");
+      const { options, challengeToken } = await authApi("passkey-register-options", { setupCode, userLabel: setupName.trim() });
+      const attestationResponse = await startRegistration({ optionsJSON: options });
+      const { token, userLabel } = await authApi("passkey-register-verify", { challengeToken, attestationResponse });
+      onLogin(token, userLabel);
+    } catch (err) {
+      setError(err.name === "NotAllowedError" ? "Cancelado" : (err.message === "invalid_setup_code" ? "Código incorrecto" : (err.message || "No se pudo registrar")));
+    } finally { setBusy(false); }
+  }
+
+  async function handleSetupPassword(e) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try {
+      const { token, userLabel } = await authApi("password-set", { setupCode, userLabel: setupName.trim(), password: setupPass });
+      onLogin(token, userLabel);
+    } catch (err) {
+      setError(err.message === "invalid_setup_code" ? "Código incorrecto" : (err.message || "No se pudo guardar"));
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="lg-wrap">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+        .lg-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f1f5f9;font-family:'DM Sans','Helvetica Neue',sans-serif;padding:20px;}
+        .lg-wrap *{box-sizing:border-box;}
+        .lg-card{background:#fff;border-radius:20px;padding:32px 26px;width:100%;max-width:360px;box-shadow:0 1px 4px rgba(0,0,0,.06);text-align:center;}
+        .lg-title{font-size:22px;font-weight:700;color:#0f172a;margin-bottom:22px;}
+        .lg-btn{cursor:pointer;border:none;font-family:inherit;font-size:14px;border-radius:12px;padding:13px 16px;font-weight:600;width:100%;margin-bottom:10px;transition:all .15s;}
+        .lg-btn:disabled{opacity:.5;cursor:default;}
+        .lg-btn-p{background:#0f4c81;color:#fff;}
+        .lg-btn-p:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 4px 12px rgba(15,76,129,.25);}
+        .lg-btn-g{background:#fff;color:#64748b;border:1.5px solid #e2e8f0;}
+        .lg-input{background:#fff;border:1.5px solid #e2e8f0;color:#0f172a;padding:12px 14px;border-radius:10px;font-family:inherit;font-size:14px;width:100%;margin-bottom:10px;outline:none;}
+        .lg-input:focus{border-color:#0f4c81;}
+        .lg-link{background:none;border:none;color:#94a3b8;font-family:inherit;font-size:12.5px;cursor:pointer;margin-top:6px;text-decoration:underline;}
+        .lg-error{color:#dc2626;font-size:12.5px;margin:-2px 0 10px;}
+      `}</style>
+      <div className="lg-card">
+        <div className="lg-title">Bolsillo 🔒</div>
+        {mode === "login" && (
+          <>
+            {passkeySupported && (
+              <button className="lg-btn lg-btn-p" disabled={busy} onClick={handlePasskeyLogin}>
+                {busy ? "..." : "🔐 Entrar con Face ID / Touch ID"}
+              </button>
+            )}
+            <button className="lg-btn lg-btn-g" disabled={busy} onClick={() => { setMode("password"); setError(""); }}>
+              Usar contraseña
+            </button>
+            {error && <p className="lg-error">{error}</p>}
+            <button className="lg-link" onClick={() => { setMode("setup"); setError(""); }}>Configurar este dispositivo</button>
+          </>
+        )}
+        {mode === "password" && (
+          <form onSubmit={handlePasswordLogin}>
+            <input className="lg-input" placeholder="Tu nombre" value={pwUser} onChange={e=>setPwUser(e.target.value)} required />
+            <input className="lg-input" type="password" placeholder="Contraseña" value={pwPass} onChange={e=>setPwPass(e.target.value)} required />
+            {error && <p className="lg-error">{error}</p>}
+            <button className="lg-btn lg-btn-p" type="submit" disabled={busy}>{busy ? "..." : "Entrar"}</button>
+            <button className="lg-link" type="button" onClick={()=>{ setMode("login"); setError(""); }}>Volver</button>
+          </form>
+        )}
+        {mode === "setup" && (
+          <div>
+            <input className="lg-input" placeholder="Tu nombre" value={setupName} onChange={e=>setSetupName(e.target.value)} />
+            <input className="lg-input" placeholder="Código de configuración" value={setupCode} onChange={e=>setSetupCode(e.target.value)} />
+            {passkeySupported && (
+              <button className="lg-btn lg-btn-p" disabled={busy || !setupName.trim() || !setupCode} onClick={handleSetupPasskey}>
+                {busy ? "..." : "🔐 Registrar Face ID / Touch ID"}
+              </button>
+            )}
+            <form onSubmit={handleSetupPassword}>
+              <input className="lg-input" type="password" placeholder="Contraseña (respaldo, min. 6)" value={setupPass} onChange={e=>setSetupPass(e.target.value)} />
+              <button className="lg-btn lg-btn-g" type="submit" disabled={busy || !setupName.trim() || !setupCode || setupPass.length<6}>
+                {busy ? "..." : "Guardar contraseña"}
+              </button>
+            </form>
+            {error && <p className="lg-error">{error}</p>}
+            <button className="lg-link" onClick={() => { setMode("login"); setError(""); }}>Volver</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function AppRoot() {
+  const [token, setToken] = useState(() => getSessionToken());
+
+  useEffect(() => {
+    onUnauthorized(() => setToken(null));
+  }, []);
+
+  function handleLogin(newToken) {
+    setSessionToken(newToken);
+    setToken(newToken);
+  }
+
+  if (!token) return <LoginGate onLogin={handleLogin} />;
+  return <App key={token} />;
 }
