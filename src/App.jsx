@@ -166,6 +166,10 @@ function setSessionToken(token) {
   } catch {}
 }
 function onUnauthorized(cb) { unauthorizedCb = cb; }
+function logout() {
+  setSessionToken(null);
+  if (unauthorizedCb) unauthorizedCb();
+}
 
 // Apps Script can hang far longer than any user should have to wait on a
 // loading spinner. Every request to it goes through here so a stuck call
@@ -1176,6 +1180,7 @@ function App() {
             <button className="btn btn-g btn-sm" onClick={loadAll} disabled={loading}>
               {loading?"...":"Sync"}
             </button>
+            <button className="btn btn-g btn-sm" onClick={logout} title="Cerrar sesión">Salir</button>
           </div>
         </div>
       </div>
