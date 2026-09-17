@@ -1593,6 +1593,23 @@ async function authApi(action, extra={}) {
   return data;
 }
 
+const LG_STYLES = `
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+  .lg-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f1f5f9;font-family:'DM Sans','Helvetica Neue',sans-serif;padding:20px;}
+  .lg-wrap *{box-sizing:border-box;}
+  .lg-card{background:#fff;border-radius:20px;padding:32px 26px;width:100%;max-width:360px;box-shadow:0 1px 4px rgba(0,0,0,.06);text-align:center;}
+  .lg-title{font-size:22px;font-weight:700;color:#0f172a;margin-bottom:22px;}
+  .lg-btn{cursor:pointer;border:none;font-family:inherit;font-size:14px;border-radius:12px;padding:13px 16px;font-weight:600;width:100%;margin-bottom:10px;transition:all .15s;}
+  .lg-btn:disabled{opacity:.5;cursor:default;}
+  .lg-btn-p{background:#0f4c81;color:#fff;}
+  .lg-btn-p:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 4px 12px rgba(15,76,129,.25);}
+  .lg-btn-g{background:#fff;color:#64748b;border:1.5px solid #e2e8f0;}
+  .lg-input{background:#fff;border:1.5px solid #e2e8f0;color:#0f172a;padding:12px 14px;border-radius:10px;font-family:inherit;font-size:14px;width:100%;margin-bottom:10px;outline:none;}
+  .lg-input:focus{border-color:#0f4c81;}
+  .lg-link{background:none;border:none;color:#94a3b8;font-family:inherit;font-size:12.5px;cursor:pointer;margin-top:6px;text-decoration:underline;}
+  .lg-error{color:#dc2626;font-size:12.5px;margin:-2px 0 10px;}
+`;
+
 function LoginGate({ onLogin }) {
   const [mode, setMode] = useState("login"); // "login" | "password" | "setup"
   const [busy, setBusy] = useState(false);
@@ -1612,14 +1629,14 @@ function LoginGate({ onLogin }) {
     }
   }, []);
 
-  async function handlePasskeyLogin() {
+  async function handlePasskeyLogin(intent = "dashboard") {
     setBusy(true); setError("");
     try {
       const { startAuthentication } = await import("@simplewebauthn/browser");
       const { options, challengeToken } = await authApi("passkey-login-options");
       const assertionResponse = await startAuthentication({ optionsJSON: options });
       const { token, userLabel } = await authApi("passkey-login-verify", { challengeToken, assertionResponse });
-      onLogin(token, userLabel);
+      onLogin(token, userLabel, intent);
     } catch (err) {
       setError(err.name === "NotAllowedError" ? "Cancelado o no reconocido" : (err.message || "No se pudo entrar"));
     } finally { setBusy(false); }
@@ -1661,29 +1678,19 @@ function LoginGate({ onLogin }) {
 
   return (
     <div className="lg-wrap">
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
-        .lg-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f1f5f9;font-family:'DM Sans','Helvetica Neue',sans-serif;padding:20px;}
-        .lg-wrap *{box-sizing:border-box;}
-        .lg-card{background:#fff;border-radius:20px;padding:32px 26px;width:100%;max-width:360px;box-shadow:0 1px 4px rgba(0,0,0,.06);text-align:center;}
-        .lg-title{font-size:22px;font-weight:700;color:#0f172a;margin-bottom:22px;}
-        .lg-btn{cursor:pointer;border:none;font-family:inherit;font-size:14px;border-radius:12px;padding:13px 16px;font-weight:600;width:100%;margin-bottom:10px;transition:all .15s;}
-        .lg-btn:disabled{opacity:.5;cursor:default;}
-        .lg-btn-p{background:#0f4c81;color:#fff;}
-        .lg-btn-p:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 4px 12px rgba(15,76,129,.25);}
-        .lg-btn-g{background:#fff;color:#64748b;border:1.5px solid #e2e8f0;}
-        .lg-input{background:#fff;border:1.5px solid #e2e8f0;color:#0f172a;padding:12px 14px;border-radius:10px;font-family:inherit;font-size:14px;width:100%;margin-bottom:10px;outline:none;}
-        .lg-input:focus{border-color:#0f4c81;}
-        .lg-link{background:none;border:none;color:#94a3b8;font-family:inherit;font-size:12.5px;cursor:pointer;margin-top:6px;text-decoration:underline;}
-        .lg-error{color:#dc2626;font-size:12.5px;margin:-2px 0 10px;}
-      `}</style>
+      <style>{LG_STYLES}</style>
       <div className="lg-card">
         <div className="lg-title">Bolsillo 🔒</div>
         {mode === "login" && (
           <>
             {passkeySupported && (
-              <button className="lg-btn lg-btn-p" disabled={busy} onClick={handlePasskeyLogin}>
+              <button className="lg-btn lg-btn-p" disabled={busy} onClick={() => handlePasskeyLogin("dashboard")}>
                 {busy ? "..." : "🔐 Entrar con Face ID / Touch ID"}
+              </button>
+            )}
+            {passkeySupported && (
+              <button className="lg-btn lg-btn-g" disabled={busy} onClick={() => handlePasskeyLogin("quickadd")}>
+                {busy ? "..." : "➕ Agregar gasto rápido"}
               </button>
             )}
             <button className="lg-btn lg-btn-g" disabled={busy} onClick={() => { setMode("password"); setError(""); }}>
@@ -1726,18 +1733,105 @@ function LoginGate({ onLogin }) {
   );
 }
 
+// A quicker path than the full dashboard: log one expense and get out.
+// Reuses the same api helpers as the main app, just without loadAll's fetch
+// of every existing row first.
+function QuickAdd({ onDone }) {
+  const [account, setAccount] = useState("credit");
+  const [desc, setDesc] = useState("");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(today());
+  const [category, setCategory] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  function reset() {
+    setDesc(""); setAmount(""); setCategory(""); setDate(today()); setSaved(false); setError("");
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try {
+      await apiFor(account).append({ desc, amount, date, category, owed: [] });
+      setSaved(true);
+    } catch {
+      setError("No se pudo guardar. Intenta de nuevo.");
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="lg-wrap">
+      <style>{LG_STYLES}</style>
+      <div className="lg-card">
+        <div className="lg-title">➕ Gasto rápido</div>
+        {saved ? (
+          <>
+            <p style={{color:"#059669",fontWeight:600,marginBottom:16}}>✅ Guardado</p>
+            <button className="lg-btn lg-btn-p" onClick={reset}>Agregar otro</button>
+            <button className="lg-btn lg-btn-g" onClick={onDone}>Ir al dashboard</button>
+            <button className="lg-link" onClick={logout}>Salir</button>
+          </>
+        ) : (
+          <form onSubmit={handleSubmit}>
+            <button type="button" className={`lg-btn ${account==="credit"?"lg-btn-p":"lg-btn-g"}`} style={{marginBottom:4}} onClick={()=>setAccount("credit")}>💳 Discover</button>
+            <button type="button" className={`lg-btn ${account==="debit"?"lg-btn-p":"lg-btn-g"}`} onClick={()=>setAccount("debit")}>🏦 Debito</button>
+            <input className="lg-input" placeholder="Descripción" value={desc} onChange={e=>setDesc(e.target.value)} required />
+            <input className="lg-input" type="number" step="0.01" inputMode="decimal" placeholder="Monto" value={amount} onChange={e=>setAmount(e.target.value)} required />
+            <input className="lg-input" type="date" value={date} onChange={e=>setDate(e.target.value)} required />
+            <select className="lg-input" value={category} onChange={e=>setCategory(e.target.value)}>
+              <option value="">Categoría (opcional)</option>
+              {CATEGORIES.map(c => <option key={c} value={c}>{catDisplay(c)}</option>)}
+            </select>
+            {error && <p className="lg-error">{error}</p>}
+            <button className="lg-btn lg-btn-p" type="submit" disabled={busy}>{busy ? "..." : "Guardar"}</button>
+            <button className="lg-link" type="button" onClick={onDone}>Ir al dashboard</button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Bumping this is a one-line change if 2 minutes ever feels too tight.
+const IDLE_TIMEOUT_MS = 2 * 60 * 1000;
+
 export default function AppRoot() {
   const [token, setToken] = useState(() => getSessionToken());
+  const [intent, setIntent] = useState("dashboard"); // "dashboard" | "quickadd"
 
   useEffect(() => {
     onUnauthorized(() => setToken(null));
   }, []);
 
-  function handleLogin(newToken) {
+  // Auto-logout after IDLE_TIMEOUT_MS of no taps/clicks/keys/scrolls. Also
+  // checks immediately when the tab regains focus, since a backgrounded
+  // mobile tab can have its timers paused while the screen was locked.
+  useEffect(() => {
+    if (!token) return;
+    let lastActive = Date.now();
+    const markActive = () => { lastActive = Date.now(); };
+    const events = ["click", "touchstart", "keydown", "scroll"];
+    events.forEach(e => window.addEventListener(e, markActive, { passive: true }));
+    const checkIdle = () => { if (Date.now() - lastActive > IDLE_TIMEOUT_MS) logout(); };
+    const interval = setInterval(checkIdle, 15000);
+    const onVisibility = () => { if (document.visibilityState === "visible") checkIdle(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      events.forEach(e => window.removeEventListener(e, markActive));
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [token]);
+
+  function handleLogin(newToken, userLabel, loginIntent = "dashboard") {
     setSessionToken(newToken);
     setToken(newToken);
+    setIntent(loginIntent);
   }
 
   if (!token) return <LoginGate onLogin={handleLogin} />;
+  if (intent === "quickadd") return <QuickAdd key={token} onDone={() => setIntent("dashboard")} />;
   return <App key={token} />;
 }
