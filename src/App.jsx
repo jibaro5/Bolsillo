@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 
 const SCRIPT_URL = "/api/sheet";
 const CLOSE_DAY = 20;
@@ -323,6 +323,58 @@ async function cardsDelete(id) {
   return parseJsonSafe(res);
 }
 
+async function rulesList() {
+  const res = await fetchWithTimeout(`${SCRIPT_URL}?action=rules-list`);
+  const data = await res.json();
+  return data.rules || [];
+}
+async function rulesAdd(rule) {
+  const res = await fetchWithTimeout(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ action:"rules-add", ...rule }) });
+  if (!res.ok) throw new Error(`rules-add failed: ${res.status}`);
+  return parseJsonSafe(res);
+}
+async function rulesEdit(id, fields) {
+  const res = await fetchWithTimeout(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ action:"rules-edit", id, ...fields }) });
+  if (!res.ok) throw new Error(`rules-edit failed: ${res.status}`);
+  return parseJsonSafe(res);
+}
+async function rulesDelete(id) {
+  const res = await fetchWithTimeout(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ action:"rules-delete", id }) });
+  if (!res.ok) throw new Error(`rules-delete failed: ${res.status}`);
+  return parseJsonSafe(res);
+}
+
+// Given every rule active today, for each category picks the card with the
+// best effective rate — 0 if that card/category/window has already hit its
+// spend cap, computed from the expenses already loaded for that card. A
+// rule with no fechaInicio/fechaFin is a permanent (non-rotating) bonus,
+// tracked against the current calendar month; one with both set is a
+// rotating window (e.g. a quarter) tracked against that exact window.
+function computeRecommendations(cards, rules, expenses) {
+  const now = today();
+  const activeRules = rules.filter(r => {
+    if (r.fechaInicio && now < r.fechaInicio) return false;
+    if (r.fechaFin && now > r.fechaFin) return false;
+    return true;
+  });
+  const byCategory = {};
+  activeRules.forEach(r => { (byCategory[r.categoria] = byCategory[r.categoria] || []).push(r); });
+  const results = Object.entries(byCategory).map(([categoria, catRules]) => {
+    const scored = catRules.map(r => {
+      const windowStart = r.fechaInicio || `${now.slice(0,7)}-01`;
+      const spent = expenses
+        .filter(e => e.account === r.cardId && e.category === categoria && e.date >= windowStart && (!r.fechaFin || e.date <= r.fechaFin))
+        .reduce((s,e) => s + e.amount, 0);
+      const tasa = parseFloat(r.tasa) || 0;
+      const tope = parseFloat(r.tope) || 0;
+      const overCap = tope > 0 && spent >= tope;
+      return { ...r, spent, tasa, tope, overCap, effectiveRate: overCap ? 0 : tasa };
+    }).sort((a,b) => b.effectiveRate - a.effectiveRate || b.tasa - a.tasa);
+    return { categoria, best: scored[0], alternatives: scored.slice(1) };
+  });
+  return results.sort((a,b) => b.best.effectiveRate - a.best.effectiveRate || b.best.tasa - a.best.tasa);
+}
+
 async function recurringRead() {
   const res = await fetchWithTimeout(`${SCRIPT_URL}?action=recurring-read`);
   const data = await res.json();
@@ -434,11 +486,16 @@ function App() {
   const [formAccount, setFormAccount] = useState("");
   const [tab, setTab] = useState("list");
   const [cards, setCards] = useState([]);
+  const [rules, setRules] = useState([]);
   const [activeCard, setActiveCard] = useState("");
   const [showCardsModal, setShowCardsModal] = useState(false);
+  const [cardsModalTab, setCardsModalTab] = useState("tarjetas");
   const [editingCardId, setEditingCardId] = useState(null);
   const [cardForm, setCardForm] = useState({ nombre:"", color:"#0f4c81", cierreDay:"", dueDay:"" });
   const [confirmDeleteCard, setConfirmDeleteCard] = useState(null);
+  const [editingRuleId, setEditingRuleId] = useState(null);
+  const [ruleForm, setRuleForm] = useState({ cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false });
+  const [confirmDeleteRule, setConfirmDeleteRule] = useState(null);
   const [confirmBulkPaid, setConfirmBulkPaid] = useState(false);
   const descRef = useRef();
   const syncQueueRef = useRef({});
@@ -498,9 +555,14 @@ function App() {
           return [];
         })
       );
-      const [recItems, debitRows, ...cardRowsList] = await Promise.all([
-        recurringRead(), debitPromise, ...cardPromises,
+      const rulesPromise = rulesList().catch(err => {
+        console.warn("Reglas tab not available yet", err);
+        return [];
+      });
+      const [recItems, debitRows, rulesRows, ...cardRowsList] = await Promise.all([
+        recurringRead(), debitPromise, rulesPromise, ...cardPromises,
       ]);
+      setRules(rulesRows);
       const normalized = [
         ...cardsRows.flatMap((c,i) => normalizeExpenseRows(cardRowsList[i], c.id)),
         ...normalizeExpenseRows(debitRows, "debit"),
@@ -807,6 +869,51 @@ function App() {
     }
   }
 
+  const EMPTY_RULE = { cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false };
+  function startAddRule() {
+    setEditingRuleId(null);
+    setRuleForm({ ...EMPTY_RULE, cardId: cards[0]?.id || "" });
+  }
+  function startEditRule(rule) {
+    setEditingRuleId(rule.id);
+    setRuleForm({
+      cardId: rule.cardId, categoria: rule.categoria, tasa: String(rule.tasa||""),
+      fechaInicio: rule.fechaInicio||"", fechaFin: rule.fechaFin||"",
+      tope: String(rule.tope||""), requiereActivacion: !!rule.requiereActivacion,
+    });
+  }
+  async function submitRuleForm(e) {
+    e.preventDefault();
+    if (!ruleForm.cardId || !ruleForm.categoria || !ruleForm.tasa) return;
+    try {
+      if (editingRuleId) {
+        await rulesEdit(editingRuleId, ruleForm);
+        showToast("Regla actualizada");
+      } else {
+        await rulesAdd(ruleForm);
+        showToast("Regla agregada");
+      }
+      setEditingRuleId(null);
+      setRuleForm({ ...EMPTY_RULE, cardId: cards[0]?.id || "" });
+      await loadAll();
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo guardar la regla","warn");
+    }
+  }
+  async function doDeleteRule() {
+    const rule = confirmDeleteRule;
+    setConfirmDeleteRule(null);
+    try {
+      await rulesDelete(rule.id);
+      showToast("Regla eliminada");
+      await loadAll();
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo eliminar la regla","warn");
+    }
+  }
+
   function toggleSelect(id) {
     setSelectedIds(s => {
       const next = new Set(s);
@@ -826,6 +933,7 @@ function App() {
   // los gastos de debito viven aparte y solo se unen de nuevo en "Me deben".
   const activeCardObj = cards.find(c => c.id === activeCard);
   const cardExpenses = (activeCard && activeCard !== "debit") ? expenses.filter(e => e.account === activeCard) : [];
+  const recommendations = useMemo(() => computeRecommendations(cards, rules, expenses), [cards, rules, expenses]);
   const debitExpenses = expenses.filter(e => e.account === "debit");
 
   const cycle = getCycleInfo(
@@ -1129,36 +1237,96 @@ function App() {
       )}
 
       {showCardsModal && (
-        <div className="modal-overlay" onClick={()=>{setShowCardsModal(false); setEditingCardId(null);}}>
-          <div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
-            <div style={{fontSize:11,letterSpacing:2,color:"#0f4c81",marginBottom:14,fontWeight:700}}>TARJETAS DE CREDITO</div>
-            {cards.map(c => (
-              <div key={c.id} className="rec-row">
-                <span style={{width:14,height:14,borderRadius:"50%",background:c.color||"#0f4c81",flexShrink:0}}></span>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,fontWeight:600}}>{c.nombre}</div>
-                  <div style={{fontSize:11,color:"#94a3b8"}}>Cierra el {c.cierreDay||"20"} · Paga el {c.dueDay||"17"}</div>
-                </div>
-                <button className="btn btn-g btn-sm" style={{padding:"6px 8px"}} onClick={()=>startEditCard(c)}>E</button>
-                <button className="btn btn-d btn-sm" style={{padding:"6px 8px"}} onClick={()=>setConfirmDeleteCard(c)}>D</button>
-              </div>
-            ))}
+        <div className="modal-overlay" onClick={()=>{setShowCardsModal(false); setEditingCardId(null); setEditingRuleId(null);}}>
+          <div className="modal" style={{maxWidth:420,maxHeight:"85vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>
+            <div className="ptt" style={{marginBottom:16}}>
+              <button className={`pto ${cardsModalTab==="tarjetas"?"on":""}`} onClick={()=>setCardsModalTab("tarjetas")}>Tarjetas</button>
+              <button className={`pto ${cardsModalTab==="reglas"?"on":""}`} onClick={()=>{setCardsModalTab("reglas"); startAddRule();}}>Reglas</button>
+            </div>
 
-            <form onSubmit={submitCardForm} style={{marginTop:16,paddingTop:16,borderTop:"1px solid #e2e8f0"}}>
-              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",marginBottom:10,fontWeight:700}}>{editingCardId?"EDITAR TARJETA":"AGREGAR TARJETA"}</div>
-              <input className="inp" style={{marginBottom:8}} placeholder="Nombre (ej. Chase Freedom)" value={cardForm.nombre} onChange={e=>setCardForm(f=>({...f,nombre:e.target.value}))} required />
-              <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
-                <input type="color" value={cardForm.color} onChange={e=>setCardForm(f=>({...f,color:e.target.value}))} style={{width:40,height:38,border:"1.5px solid #e2e8f0",borderRadius:8,padding:2,cursor:"pointer"}} />
-                <input className="inp" type="number" min="1" max="31" placeholder="Dia de cierre" value={cardForm.cierreDay} onChange={e=>setCardForm(f=>({...f,cierreDay:e.target.value}))} />
-                <input className="inp" type="number" min="1" max="31" placeholder="Dia de pago" value={cardForm.dueDay} onChange={e=>setCardForm(f=>({...f,dueDay:e.target.value}))} />
-              </div>
-              <div style={{display:"flex",gap:8}}>
-                <button className="btn btn-p" style={{flex:1}} type="submit">{editingCardId?"Guardar cambios":"+ Agregar tarjeta"}</button>
-                {editingCardId && <button className="btn btn-g" type="button" onClick={startAddCard}>Cancelar</button>}
-              </div>
-            </form>
+            {cardsModalTab === "tarjetas" && (
+              <>
+                {cards.map(c => (
+                  <div key={c.id} className="rec-row">
+                    <span style={{width:14,height:14,borderRadius:"50%",background:c.color||"#0f4c81",flexShrink:0}}></span>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:13,fontWeight:600}}>{c.nombre}</div>
+                      <div style={{fontSize:11,color:"#94a3b8"}}>Cierra el {c.cierreDay||"20"} · Paga el {c.dueDay||"17"}</div>
+                    </div>
+                    <button className="btn btn-g btn-sm" style={{padding:"6px 8px"}} onClick={()=>startEditCard(c)}>E</button>
+                    <button className="btn btn-d btn-sm" style={{padding:"6px 8px"}} onClick={()=>setConfirmDeleteCard(c)}>D</button>
+                  </div>
+                ))}
 
-            <button className="btn btn-g" style={{width:"100%",marginTop:16}} onClick={()=>{setShowCardsModal(false); setEditingCardId(null);}}>Cerrar</button>
+                <form onSubmit={submitCardForm} style={{marginTop:16,paddingTop:16,borderTop:"1px solid #e2e8f0"}}>
+                  <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",marginBottom:10,fontWeight:700}}>{editingCardId?"EDITAR TARJETA":"AGREGAR TARJETA"}</div>
+                  <input className="inp" style={{marginBottom:8}} placeholder="Nombre (ej. Chase Freedom)" value={cardForm.nombre} onChange={e=>setCardForm(f=>({...f,nombre:e.target.value}))} required />
+                  <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
+                    <input type="color" value={cardForm.color} onChange={e=>setCardForm(f=>({...f,color:e.target.value}))} style={{width:40,height:38,border:"1.5px solid #e2e8f0",borderRadius:8,padding:2,cursor:"pointer"}} />
+                    <input className="inp" type="number" min="1" max="31" placeholder="Dia de cierre" value={cardForm.cierreDay} onChange={e=>setCardForm(f=>({...f,cierreDay:e.target.value}))} />
+                    <input className="inp" type="number" min="1" max="31" placeholder="Dia de pago" value={cardForm.dueDay} onChange={e=>setCardForm(f=>({...f,dueDay:e.target.value}))} />
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button className="btn btn-p" style={{flex:1}} type="submit">{editingCardId?"Guardar cambios":"+ Agregar tarjeta"}</button>
+                    {editingCardId && <button className="btn btn-g" type="button" onClick={startAddCard}>Cancelar</button>}
+                  </div>
+                </form>
+              </>
+            )}
+
+            {cardsModalTab === "reglas" && (
+              <>
+                {rules.length === 0 && <div className="empty-state" style={{padding:20}}>Sin reglas todavia.</div>}
+                {rules.map(r => {
+                  const c = cards.find(cc=>cc.id===r.cardId);
+                  return (
+                    <div key={r.id} className="rec-row">
+                      <span style={{width:14,height:14,borderRadius:"50%",background:c?.color||"#0f4c81",flexShrink:0}}></span>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:13,fontWeight:600}}>{c?.nombre||r.cardId} · {r.categoria} · {r.tasa}%</div>
+                        <div style={{fontSize:11,color:"#94a3b8"}}>
+                          {r.fechaInicio || r.fechaFin ? `${r.fechaInicio||"..."} a ${r.fechaFin||"..."}` : "Permanente"}
+                          {r.tope ? ` · tope $${r.tope}` : ""}{r.requiereActivacion ? " · requiere activar" : ""}
+                        </div>
+                      </div>
+                      <button className="btn btn-g btn-sm" style={{padding:"6px 8px"}} onClick={()=>startEditRule(r)}>E</button>
+                      <button className="btn btn-d btn-sm" style={{padding:"6px 8px"}} onClick={()=>setConfirmDeleteRule(r)}>D</button>
+                    </div>
+                  );
+                })}
+
+                <form onSubmit={submitRuleForm} style={{marginTop:16,paddingTop:16,borderTop:"1px solid #e2e8f0"}}>
+                  <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",marginBottom:10,fontWeight:700}}>{editingRuleId?"EDITAR REGLA":"AGREGAR REGLA"}</div>
+                  <div style={{display:"flex",gap:8,marginBottom:8}}>
+                    <select className="sel" value={ruleForm.cardId} onChange={e=>setRuleForm(f=>({...f,cardId:e.target.value}))} required>
+                      <option value="">Tarjeta</option>
+                      {cards.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                    </select>
+                    <select className="sel" value={ruleForm.categoria} onChange={e=>setRuleForm(f=>({...f,categoria:e.target.value}))} required>
+                      <option value="">Categoria</option>
+                      {CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                    </select>
+                  </div>
+                  <input className="inp" style={{marginBottom:8}} type="number" min="0" step="0.1" placeholder="Tasa % (ej. 5)" value={ruleForm.tasa} onChange={e=>setRuleForm(f=>({...f,tasa:e.target.value}))} required />
+                  <div style={{fontSize:10,color:"#94a3b8",marginBottom:4}}>Fechas (deja vacio si es un beneficio permanente):</div>
+                  <div style={{display:"flex",gap:8,marginBottom:8}}>
+                    <input className="inp" type="date" value={ruleForm.fechaInicio} onChange={e=>setRuleForm(f=>({...f,fechaInicio:e.target.value}))} />
+                    <input className="inp" type="date" value={ruleForm.fechaFin} onChange={e=>setRuleForm(f=>({...f,fechaFin:e.target.value}))} />
+                  </div>
+                  <input className="inp" style={{marginBottom:8}} type="number" min="0" step="0.01" placeholder="Tope de gasto (opcional)" value={ruleForm.tope} onChange={e=>setRuleForm(f=>({...f,tope:e.target.value}))} />
+                  <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,fontSize:12,color:"#64748b"}}>
+                    <input type="checkbox" checked={ruleForm.requiereActivacion} onChange={e=>setRuleForm(f=>({...f,requiereActivacion:e.target.checked}))} />
+                    Requiere activarla cada periodo
+                  </label>
+                  <div style={{display:"flex",gap:8}}>
+                    <button className="btn btn-p" style={{flex:1}} type="submit">{editingRuleId?"Guardar cambios":"+ Agregar regla"}</button>
+                    {editingRuleId && <button className="btn btn-g" type="button" onClick={startAddRule}>Cancelar</button>}
+                  </div>
+                </form>
+              </>
+            )}
+
+            <button className="btn btn-g" style={{width:"100%",marginTop:16}} onClick={()=>{setShowCardsModal(false); setEditingCardId(null); setEditingRuleId(null);}}>Cerrar</button>
           </div>
         </div>
       )}
@@ -1172,6 +1340,20 @@ function App() {
             <div style={{display:"flex",gap:8}}>
               <button className="btn btn-d" style={{flex:1}} onClick={doDeleteCard}>Eliminar</button>
               <button className="btn btn-g" onClick={()=>setConfirmDeleteCard(null)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDeleteRule && (
+        <div className="modal-overlay" onClick={()=>setConfirmDeleteRule(null)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:11,letterSpacing:2,color:"#dc2626",marginBottom:12,fontWeight:700}}>ELIMINAR REGLA</div>
+            <div style={{fontSize:16,marginBottom:4,fontWeight:600}}>{confirmDeleteRule.categoria} · {confirmDeleteRule.tasa}%</div>
+            <div style={{fontSize:13,color:"#64748b",marginBottom:20}}>Esta regla dejara de contar para la recomendacion de "Mejor tarjeta hoy".</div>
+            <div style={{display:"flex",gap:8}}>
+              <button className="btn btn-d" style={{flex:1}} onClick={doDeleteRule}>Eliminar</button>
+              <button className="btn btn-g" onClick={()=>setConfirmDeleteRule(null)}>Cancelar</button>
             </div>
           </div>
         </div>
@@ -1453,6 +1635,38 @@ function App() {
             <button className="qbtn" onClick={()=>shareSelected(meDeben)}><span className="qicon">📤</span><span>Compartir</span></button>
             <button className="qbtn" onClick={loadAll}><span className="qicon">🔄</span><span>Sync</span></button>
           </div>
+
+          {recommendations.length > 0 && (
+            <div className="card" style={{padding:14, marginBottom:16}}>
+              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,marginBottom:10}}>💳 MEJOR TARJETA HOY</div>
+              {recommendations.map(rec => {
+                const bestCard = cards.find(c=>c.id===rec.best.cardId);
+                const pct = rec.best.tope > 0 ? Math.min(100, Math.round(rec.best.spent/rec.best.tope*100)) : null;
+                return (
+                  <div key={rec.categoria} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #f1f5f9"}}>
+                    <div style={{fontSize:18,width:22,textAlign:"center"}}>{CAT_EMOJI[rec.categoria]||"📦"}</div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:13,fontWeight:600}}>{rec.categoria}</div>
+                      <div style={{fontSize:11,color:"#94a3b8",display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+                        <span style={{width:8,height:8,borderRadius:"50%",background:bestCard?.color||"#0f4c81",display:"inline-block",flexShrink:0}}></span>
+                        {bestCard?.nombre || rec.best.cardId}
+                        {rec.best.requiereActivacion && <span className="badge badge-amber" style={{fontSize:8,padding:"1px 6px"}}>Activar</span>}
+                      </div>
+                      {pct !== null && (
+                        <div style={{marginTop:4,height:4,background:"#f1f5f9",borderRadius:2,overflow:"hidden",width:120}}>
+                          <div style={{width:`${pct}%`,height:"100%",background:pct>=100?"#dc2626":pct>=80?"#b45309":"#0f4c81"}}></div>
+                        </div>
+                      )}
+                    </div>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontSize:15,fontWeight:700,color: rec.best.overCap ? "#dc2626" : "#059669"}}>{rec.best.effectiveRate}%</div>
+                      {rec.best.overCap && <div style={{fontSize:9,color:"#dc2626"}}>tope alcanzado</div>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {activeCard!=="debit" && (
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,margin:"16px 0"}}>

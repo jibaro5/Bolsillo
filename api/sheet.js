@@ -1,6 +1,7 @@
 import { sheetsFetch, getSheetGid, rowFromUpdatedRange } from "../lib/sheetsClient.js";
 import { requireAuth } from "../lib/session.js";
 import { listCards, addCard, editCard, deleteCard, getCard } from "../lib/cardsStore.js";
+import { listRules, addRule, editRule, deleteRule } from "../lib/rewardsStore.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -225,6 +226,11 @@ export default async function handler(req, res) {
       if (!card) return res.status(404).json({ error: "card_not_found" });
       await deleteRow(card.sheetTab, body); result = { ok:true };
     }
+
+    else if (action === "rules-list") result = { rules: await listRules() };
+    else if (action === "rules-add") result = await addRule(body);
+    else if (action === "rules-edit") { await editRule(body.id, body); result = { ok:true }; }
+    else if (action === "rules-delete") { await deleteRule(body.id); result = { ok:true }; }
 
     res.status(200).json(result);
   } catch (err) {
