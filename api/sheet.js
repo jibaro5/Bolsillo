@@ -1,5 +1,6 @@
 import { sheetsFetch, getSheetGid, rowFromUpdatedRange } from "../lib/sheetsClient.js";
 import { requireAuth } from "../lib/session.js";
+import { listCards, addCard, editCard, deleteCard, getCard } from "../lib/cardsStore.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -193,6 +194,37 @@ export default async function handler(req, res) {
     else if (action === "recurring-append") result = await appendRecurring(body);
     else if (action === "recurring-edit") { await editRecurring(body); result = { ok:true }; }
     else if (action === "recurring-delete") { await deleteRecurring(body); result = { ok:true }; }
+
+    else if (action === "cards-list") result = { cards: await listCards() };
+    else if (action === "cards-add") result = await addCard(body);
+    else if (action === "cards-edit") { await editCard(body.id, body); result = { ok:true }; }
+    else if (action === "cards-delete") { await deleteCard(body.id); result = { ok:true }; }
+
+    else if (action === "card-read") {
+      const card = await getCard(req.method === "GET" ? req.query.cardId : body.cardId);
+      if (!card) return res.status(404).json({ error: "card_not_found" });
+      result = { expenses: await readExpenses(card.sheetTab) };
+    }
+    else if (action === "card-append") {
+      const card = await getCard(body.cardId);
+      if (!card) return res.status(404).json({ error: "card_not_found" });
+      result = await appendExpense(card.sheetTab, body);
+    }
+    else if (action === "card-edit") {
+      const card = await getCard(body.cardId);
+      if (!card) return res.status(404).json({ error: "card_not_found" });
+      await editExpense(card.sheetTab, body); result = { ok:true };
+    }
+    else if (action === "card-update") {
+      const card = await getCard(body.cardId);
+      if (!card) return res.status(404).json({ error: "card_not_found" });
+      await updateExpenseStatus(card.sheetTab, body); result = { ok:true };
+    }
+    else if (action === "card-delete") {
+      const card = await getCard(body.cardId);
+      if (!card) return res.status(404).json({ error: "card_not_found" });
+      await deleteRow(card.sheetTab, body); result = { ok:true };
+    }
 
     res.status(200).json(result);
   } catch (err) {

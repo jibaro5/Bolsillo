@@ -123,20 +123,20 @@ function buildShareText(items) {
   lines.push("¿Te debo algo?");
   return lines.join("\n").trim();
 }
-function getCycleInfo() {
+function getCycleInfo(closeDay = CLOSE_DAY, dueDay = DUE_DAY) {
   const now = new Date();
   const day = now.getDate();
   const year = now.getFullYear();
   const month = now.getMonth();
   let cycleStart, cycleEnd, dueDate;
-  if (day <= CLOSE_DAY) {
-    cycleStart = new Date(year, month - 1, CLOSE_DAY + 1);
-    cycleEnd = new Date(year, month, CLOSE_DAY);
-    dueDate = new Date(year, month + 1, DUE_DAY);
+  if (day <= closeDay) {
+    cycleStart = new Date(year, month - 1, closeDay + 1);
+    cycleEnd = new Date(year, month, closeDay);
+    dueDate = new Date(year, month + 1, dueDay);
   } else {
-    cycleStart = new Date(year, month, CLOSE_DAY + 1);
-    cycleEnd = new Date(year, month + 1, CLOSE_DAY);
-    dueDate = new Date(year, month + 2, DUE_DAY);
+    cycleStart = new Date(year, month, closeDay + 1);
+    cycleEnd = new Date(year, month + 1, closeDay);
+    dueDate = new Date(year, month + 2, dueDay);
   }
   const msPerDay = 1000 * 60 * 60 * 24;
   const daysUntilDue = Math.ceil((dueDate - now) / msPerDay);
@@ -247,9 +247,81 @@ function makeExpenseApi(actionPrefix) {
   }
   return { read, append, edit, updateStatus, delete: del };
 }
-const creditApi = makeExpenseApi("");
 const debitApi = makeExpenseApi("debito-");
-function apiFor(account) { return account === "debit" ? debitApi : creditApi; }
+
+// Same shape as makeExpenseApi, but for a specific credit card (identified
+// by its id from the "Tarjetas" sheet) instead of a fixed action prefix.
+function makeCardExpenseApi(cardId) {
+  async function read() {
+    const res = await fetchWithTimeout(`${SCRIPT_URL}?action=card-read&cardId=${encodeURIComponent(cardId)}`);
+    const data = await res.json();
+    return data.expenses || [];
+  }
+  async function append(expense) {
+    const res = await fetchWithTimeout(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action:"card-append", cardId, desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:buildOwedStr(expense) }),
+    });
+    if (!res.ok) throw new Error(`card-append failed: ${res.status}`);
+    return parseJsonSafe(res);
+  }
+  async function edit(expense) {
+    const res = await fetchWithTimeout(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action:"card-edit", cardId, id:String(expense.sheetId), desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:buildOwedStr(expense) }),
+    });
+    if (!res.ok) throw new Error(`card-edit failed: ${res.status}`);
+    return parseJsonSafe(res);
+  }
+  async function updateStatus(expense) {
+    const res = await fetchWithTimeout(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action:"card-update", cardId, id:String(expense.sheetId), desc:expense.desc, date:expense.date, amount:String(expense.amount), added:String(expense.added), paid:String(expense.paid), owed:buildOwedStr(expense) }),
+    });
+    if (!res.ok) throw new Error(`card-update failed: ${res.status}`);
+    return parseJsonSafe(res);
+  }
+  async function del(expense) {
+    const res = await fetchWithTimeout(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action:"card-delete", cardId, id:String(expense.sheetId), desc:expense.desc, date:expense.date, amount:String(expense.amount) }),
+    });
+    if (!res.ok) throw new Error(`card-delete failed: ${res.status}`);
+    return parseJsonSafe(res);
+  }
+  return { read, append, edit, updateStatus, delete: del };
+}
+const cardApiCache = {};
+function apiFor(account) {
+  if (account === "debit") return debitApi;
+  if (!cardApiCache[account]) cardApiCache[account] = makeCardExpenseApi(account);
+  return cardApiCache[account];
+}
+
+async function cardsList() {
+  const res = await fetchWithTimeout(`${SCRIPT_URL}?action=cards-list`);
+  const data = await res.json();
+  return data.cards || [];
+}
+async function cardsAdd(card) {
+  const res = await fetchWithTimeout(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ action:"cards-add", ...card }) });
+  if (!res.ok) throw new Error(`cards-add failed: ${res.status}`);
+  return parseJsonSafe(res);
+}
+async function cardsEdit(id, fields) {
+  const res = await fetchWithTimeout(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ action:"cards-edit", id, ...fields }) });
+  if (!res.ok) throw new Error(`cards-edit failed: ${res.status}`);
+  return parseJsonSafe(res);
+}
+async function cardsDelete(id) {
+  const res = await fetchWithTimeout(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ action:"cards-delete", id }) });
+  if (!res.ok) throw new Error(`cards-delete failed: ${res.status}`);
+  return parseJsonSafe(res);
+}
 
 async function recurringRead() {
   const res = await fetchWithTimeout(`${SCRIPT_URL}?action=recurring-read`);
@@ -295,9 +367,9 @@ function catDisplay(c) {
 }
 
 // Normalizes raw sheet rows into app-shaped expenses, tagging each with its
-// account ("credit" = Discover, "debit"). The local id is prefixed with the
-// account so credit/debit rows (which each number their own rows starting
-// at 1) can never collide; sheetId stays the raw row number for API calls.
+// account (a credit card's id, or "debit"). The local id is prefixed with
+// the account so rows from different tabs (which each number their own rows
+// starting at 1) can never collide; sheetId stays the raw row number for API calls.
 function normalizeExpenseRows(rows, account) {
   const normalized = [];
   for (let i = 0; i < rows.length; i++) {
@@ -359,14 +431,37 @@ function App() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [confirmRecDelete, setConfirmRecDelete] = useState(null);
   const [showForm, setShowForm] = useState(false);
-  const [formAccount, setFormAccount] = useState("credit");
+  const [formAccount, setFormAccount] = useState("");
   const [tab, setTab] = useState("list");
-  const [activeCard, setActiveCard] = useState("credit");
+  const [cards, setCards] = useState([]);
+  const [activeCard, setActiveCard] = useState("");
+  const [showCardsModal, setShowCardsModal] = useState(false);
+  const [editingCardId, setEditingCardId] = useState(null);
+  const [cardForm, setCardForm] = useState({ nombre:"", color:"#0f4c81", cierreDay:"", dueDay:"" });
+  const [confirmDeleteCard, setConfirmDeleteCard] = useState(null);
   const [confirmBulkPaid, setConfirmBulkPaid] = useState(false);
   const descRef = useRef();
   const syncQueueRef = useRef({});
+  const lastCreditCardRef = useRef("");
 
   useEffect(() => { loadAll(); }, []);
+
+  // Once cards load, default both the hero and the "Nuevo gasto" toggle to
+  // the first one — but only if nothing more specific has been picked yet.
+  useEffect(() => {
+    if (!cards.length) return;
+    if (!activeCard) setActiveCard(cards[0].id);
+    if (!formAccount) setFormAccount(cards[0].id);
+  }, [cards]);
+
+  useEffect(() => {
+    if (activeCard && activeCard !== "debit") lastCreditCardRef.current = activeCard;
+  }, [activeCard]);
+
+  function cardName(accountId) {
+    if (accountId === "debit") return "Debito";
+    return cards.find(c => c.id === accountId)?.nombre || "Tarjeta";
+  }
 
   // Runs `task` in the background, tracked by the `syncing` indicator.
   // Tasks sharing the same `key` (e.g. the same expense id) are chained
@@ -385,19 +480,29 @@ function App() {
   async function loadAll() {
     setLoading(true); setStatus("idle");
     try {
-      // All three reads fire at once. Debito is wrapped in its own catch so a
-      // failure there (e.g. the tab not existing yet) resolves to an empty
-      // list instead of rejecting this Promise.all and taking down the
-      // Discover side of the app - without serializing it after the other two.
+      // Cards need to be known before we can fire one read per card, so this
+      // one goes first; everything else (debito, recurring, and each card's
+      // own expenses) then fires in parallel. Debito and each card's read
+      // are wrapped in their own catch so one failing (e.g. a tab not
+      // existing yet) resolves to an empty list instead of taking down
+      // the rest of the load.
+      const cardsRows = await cardsList();
+      setCards(cardsRows);
       const debitPromise = debitApi.read().catch(err => {
         console.warn("Debito tab not available yet", err);
         return [];
       });
-      const [creditRows, recItems, debitRows] = await Promise.all([
-        creditApi.read(), recurringRead(), debitPromise,
+      const cardPromises = cardsRows.map(c =>
+        apiFor(c.id).read().catch(err => {
+          console.warn(`Card ${c.id} not available yet`, err);
+          return [];
+        })
+      );
+      const [recItems, debitRows, ...cardRowsList] = await Promise.all([
+        recurringRead(), debitPromise, ...cardPromises,
       ]);
       const normalized = [
-        ...normalizeExpenseRows(creditRows, "credit"),
+        ...cardsRows.flatMap((c,i) => normalizeExpenseRows(cardRowsList[i], c.id)),
         ...normalizeExpenseRows(debitRows, "debit"),
       ];
       setExpenses(normalized);
@@ -465,7 +570,7 @@ function App() {
     }));
     const isEdit = !!editId;
     const prevExpense = isEdit ? expenses.find(x=>x.id===editId) : null;
-    const account = isEdit ? (prevExpense?.account||"credit") : formAccount;
+    const account = isEdit ? (prevExpense?.account || cards[0]?.id) : formAccount;
     const expense = {
       id: editId ?? `${account}-${Date.now()}`,
       sheetId: isEdit ? prevExpense?.sheetId : null,
@@ -501,10 +606,11 @@ function App() {
       });
   }
   function addRecurringToList(rec) {
+    const cardId = (activeCard && activeCard !== "debit") ? activeCard : (cards[0]?.id || "discover");
     const expense = {
-      id: `credit-${Date.now()}`,
+      id: `${cardId}-${Date.now()}`,
       sheetId: null,
-      account: "credit",
+      account: cardId,
       desc: rec.name,
       amount: rec.amount,
       date: today(),
@@ -516,7 +622,7 @@ function App() {
     };
     const snapshot = expenses;
     setExpenses(ex=>[expense,...ex]);
-    runSync(expense.id, () => creditApi.append(expense))
+    runSync(expense.id, () => apiFor(cardId).append(expense))
       .then(result => {
         if (result && result.id != null) {
           setExpenses(ex=>ex.map(x=>x.id===expense.id?{...x,sheetId:result.id}:x));
@@ -617,7 +723,7 @@ function App() {
   }
 
   function markAllAdded() {
-    const pending = expenses.filter(e=>e.account!=="debit" && !e.added);
+    const pending = expenses.filter(e=>e.account===activeCard && !e.added);
     if (!pending.length) return;
     bulkToggle(pending, "added", `${pending.length} gastos marcados como ingresados`);
   }
@@ -638,7 +744,7 @@ function App() {
 
   function startEdit(ex) {
     setEditId(ex.id);
-    setFormAccount(ex.account||"credit");
+    setFormAccount(ex.account || cards[0]?.id || "discover");
     setForm({desc:ex.desc, amount:String(ex.amount), date:ex.date, category:ex.category||"", note:ex.note||"", owed:ex.owed||[]});
     setShowOwed((ex.owed||[]).length > 0);
     setShowForm(true);
@@ -660,6 +766,47 @@ function App() {
     setShowRecForm(true);
   }
 
+  function startAddCard() {
+    setEditingCardId(null);
+    setCardForm({ nombre:"", color:"#0f4c81", cierreDay:"", dueDay:"" });
+  }
+  function startEditCard(card) {
+    setEditingCardId(card.id);
+    setCardForm({ nombre:card.nombre, color:card.color||"#0f4c81", cierreDay:String(card.cierreDay||""), dueDay:String(card.dueDay||"") });
+  }
+  async function submitCardForm(e) {
+    e.preventDefault();
+    if (!cardForm.nombre.trim()) return;
+    try {
+      if (editingCardId) {
+        await cardsEdit(editingCardId, cardForm);
+        showToast("Tarjeta actualizada");
+      } else {
+        await cardsAdd(cardForm);
+        showToast("Tarjeta agregada");
+      }
+      setEditingCardId(null);
+      setCardForm({ nombre:"", color:"#0f4c81", cierreDay:"", dueDay:"" });
+      await loadAll();
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo guardar la tarjeta","warn");
+    }
+  }
+  async function doDeleteCard() {
+    const card = confirmDeleteCard;
+    setConfirmDeleteCard(null);
+    try {
+      await cardsDelete(card.id);
+      showToast("Tarjeta eliminada (sus gastos no se borraron)");
+      if (activeCard === card.id) setActiveCard("");
+      await loadAll();
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo eliminar la tarjeta","warn");
+    }
+  }
+
   function toggleSelect(id) {
     setSelectedIds(s => {
       const next = new Set(s);
@@ -677,22 +824,26 @@ function App() {
 
   // "Gastos"/ciclo/Resumen son exclusivos de la tarjeta Discover (credit);
   // los gastos de debito viven aparte y solo se unen de nuevo en "Me deben".
-  const creditExpenses = expenses.filter(e => e.account !== "debit");
+  const activeCardObj = cards.find(c => c.id === activeCard);
+  const cardExpenses = (activeCard && activeCard !== "debit") ? expenses.filter(e => e.account === activeCard) : [];
   const debitExpenses = expenses.filter(e => e.account === "debit");
 
-  const cycle = getCycleInfo();
-  const cycleExpenses = creditExpenses.filter(e => e.date >= cycle.start && e.date <= cycle.end);
+  const cycle = getCycleInfo(
+    activeCardObj?.cierreDay ? parseInt(activeCardObj.cierreDay, 10) : CLOSE_DAY,
+    activeCardObj?.dueDay ? parseInt(activeCardObj.dueDay, 10) : DUE_DAY,
+  );
+  const cycleExpenses = cardExpenses.filter(e => e.date >= cycle.start && e.date <= cycle.end);
   const cycleTotal = cycleExpenses.reduce((s,e)=>s+e.amount,0);
   const cyclePending = cycleExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0);
   const totalOwed = expenses.filter(e=>!e.paid).reduce((s,e)=>s+owedForExp(e),0);
   const netCost = cycleExpenses.reduce((s,e)=>s+(e.amount-owedForExp(e)),0);
-  const months = [...new Set(creditExpenses.map(e=>getMonth(e.date)))].sort().reverse();
-  const availableMonths = [...new Set(creditExpenses.map(e=>getMonth(e.date)))].sort().reverse();
+  const months = [...new Set(cardExpenses.map(e=>getMonth(e.date)))].sort().reverse();
+  const availableMonths = [...new Set(cardExpenses.map(e=>getMonth(e.date)))].sort().reverse();
   const meDeben = expenses.filter(e => owedForExp(e) > 0 && !e.paid);
   const meDebenTotal = meDeben.reduce((s,e)=>s+owedForExp(e),0);
   const meDebenGroups = groupByDate(meDeben);
 
-  let filtered = creditExpenses;
+  let filtered = cardExpenses;
   if (filter === "pending") filtered = filtered.filter(e=>!e.added);
   else if (filter === "added") filtered = filtered.filter(e=>e.added);
   if (dateFrom) filtered = filtered.filter(e=>e.date >= dateFrom);
@@ -726,7 +877,7 @@ function App() {
   // Ultimos 6 meses con datos, para la grafica de Resumen.
   const chartMonths = [...months].slice(0,6).reverse();
   const chartData = chartMonths.map(m => {
-    const exps = creditExpenses.filter(e=>getMonth(e.date)===m);
+    const exps = cardExpenses.filter(e=>getMonth(e.date)===m);
     return { month:m, total: exps.reduce((s,e)=>s+e.amount,0), owed: exps.reduce((s,e)=>s+owedForExp(e),0) };
   });
   const chartMax = Math.max(1, ...chartData.map(d=>Math.max(d.total,d.owed))) * 1.15;
@@ -739,7 +890,7 @@ function App() {
     const owedAmt = owedForExp(ex);
     const hasOwed = owedAmt > 0;
     const fullyDone = showAdded ? (ex.added && (!hasOwed || ex.paid)) : (hasOwed && ex.paid);
-    const inCycle = ex.account==="credit" && ex.date >= cycle.start && ex.date <= cycle.end;
+    const inCycle = ex.account===activeCard && ex.date >= cycle.start && ex.date <= cycle.end;
     return (
       <div key={ex.id} className={`tx ${fullyDone?"tx-dim":""}`}>
         <div className="tx-checks">
@@ -767,7 +918,7 @@ function App() {
           <div className="tx-title">{ex.desc}</div>
           <div className="tx-sub">
             <span>{ex.date}</span>
-            {showSource && <span className="src-badge">{ex.account==="debit"?"Debito":"Discover"}</span>}
+            {showSource && <span className="src-badge">{cardName(ex.account)}</span>}
             {inCycle && !showSource && <span className="badge badge-blue" style={{fontSize:9}}>ciclo actual</span>}
             {hasOwed && !ex.paid && <span className="badge badge-amber">{(ex.owed||[]).map(p=>p.name||"Alguien").join(", ")} debe {fmt(owedAmt)}</span>}
             {hasOwed && ex.paid && <span className="badge badge-green">Cobrado {fmt(owedAmt)}</span>}
@@ -977,6 +1128,55 @@ function App() {
         </div>
       )}
 
+      {showCardsModal && (
+        <div className="modal-overlay" onClick={()=>{setShowCardsModal(false); setEditingCardId(null);}}>
+          <div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:11,letterSpacing:2,color:"#0f4c81",marginBottom:14,fontWeight:700}}>TARJETAS DE CREDITO</div>
+            {cards.map(c => (
+              <div key={c.id} className="rec-row">
+                <span style={{width:14,height:14,borderRadius:"50%",background:c.color||"#0f4c81",flexShrink:0}}></span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:600}}>{c.nombre}</div>
+                  <div style={{fontSize:11,color:"#94a3b8"}}>Cierra el {c.cierreDay||"20"} · Paga el {c.dueDay||"17"}</div>
+                </div>
+                <button className="btn btn-g btn-sm" style={{padding:"6px 8px"}} onClick={()=>startEditCard(c)}>E</button>
+                <button className="btn btn-d btn-sm" style={{padding:"6px 8px"}} onClick={()=>setConfirmDeleteCard(c)}>D</button>
+              </div>
+            ))}
+
+            <form onSubmit={submitCardForm} style={{marginTop:16,paddingTop:16,borderTop:"1px solid #e2e8f0"}}>
+              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",marginBottom:10,fontWeight:700}}>{editingCardId?"EDITAR TARJETA":"AGREGAR TARJETA"}</div>
+              <input className="inp" style={{marginBottom:8}} placeholder="Nombre (ej. Chase Freedom)" value={cardForm.nombre} onChange={e=>setCardForm(f=>({...f,nombre:e.target.value}))} required />
+              <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
+                <input type="color" value={cardForm.color} onChange={e=>setCardForm(f=>({...f,color:e.target.value}))} style={{width:40,height:38,border:"1.5px solid #e2e8f0",borderRadius:8,padding:2,cursor:"pointer"}} />
+                <input className="inp" type="number" min="1" max="31" placeholder="Dia de cierre" value={cardForm.cierreDay} onChange={e=>setCardForm(f=>({...f,cierreDay:e.target.value}))} />
+                <input className="inp" type="number" min="1" max="31" placeholder="Dia de pago" value={cardForm.dueDay} onChange={e=>setCardForm(f=>({...f,dueDay:e.target.value}))} />
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <button className="btn btn-p" style={{flex:1}} type="submit">{editingCardId?"Guardar cambios":"+ Agregar tarjeta"}</button>
+                {editingCardId && <button className="btn btn-g" type="button" onClick={startAddCard}>Cancelar</button>}
+              </div>
+            </form>
+
+            <button className="btn btn-g" style={{width:"100%",marginTop:16}} onClick={()=>{setShowCardsModal(false); setEditingCardId(null);}}>Cerrar</button>
+          </div>
+        </div>
+      )}
+
+      {confirmDeleteCard && (
+        <div className="modal-overlay" onClick={()=>setConfirmDeleteCard(null)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:11,letterSpacing:2,color:"#dc2626",marginBottom:12,fontWeight:700}}>ELIMINAR TARJETA</div>
+            <div style={{fontSize:16,marginBottom:4,fontWeight:600}}>{confirmDeleteCard.nombre}</div>
+            <div style={{fontSize:13,color:"#64748b",marginBottom:20}}>Sus gastos ya registrados no se borran, solo desaparece de la lista de tarjetas.</div>
+            <div style={{display:"flex",gap:8}}>
+              <button className="btn btn-d" style={{flex:1}} onClick={doDeleteCard}>Eliminar</button>
+              <button className="btn btn-g" onClick={()=>setConfirmDeleteCard(null)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {confirmBulkPaid && (
         <div className="modal-overlay" onClick={()=>setConfirmBulkPaid(false)}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
@@ -1018,10 +1218,14 @@ function App() {
             </div>
 
             {!editId && (
-              <div className="acct-toggle">
-                <button type="button" className={`acct-btn discover ${formAccount==="credit"?"on":""}`} onClick={()=>setFormAccount("credit")}>
-                  <span className="acct-dot" style={{background:"#0f4c81"}}></span>Discover
-                </button>
+              <div className="acct-toggle" style={{flexWrap:"wrap"}}>
+                {cards.map(c => (
+                  <button key={c.id} type="button" className={`acct-btn ${formAccount===c.id?"on":""}`}
+                    style={formAccount===c.id ? {borderColor:c.color||"#0f4c81", background:"#eff6ff", color:c.color||"#0f4c81"} : undefined}
+                    onClick={()=>setFormAccount(c.id)}>
+                    <span className="acct-dot" style={{background:c.color||"#0f4c81"}}></span>{c.nombre}
+                  </button>
+                ))}
                 <button type="button" className={`acct-btn debito ${formAccount==="debit"?"on":""}`} onClick={()=>setFormAccount("debit")}>
                   <span className="acct-dot" style={{background:"#0f172a"}}></span>Debito
                 </button>
@@ -1168,7 +1372,7 @@ function App() {
             </div>
             <div>
               <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700,letterSpacing:-.3,lineHeight:1}}>Bolsillo</div>
-              <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,fontWeight:600}}>DISCOVER · DEBITO</div>
+              <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,fontWeight:600}}>{cards.length} TARJETA{cards.length!==1?"S":""} · DEBITO</div>
             </div>
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -1207,11 +1411,13 @@ function App() {
                 </div>
               </div>
             </div>
-            <div className={`stack-card ${activeCard==="credit"?"front":"back"}`}
-              style={{background:`linear-gradient(135deg,${cycle.isUrgent?"#dc2626,#b91c1c":"#0f4c81,#1e6ab0"})`}}
-              onClick={()=>setActiveCard("credit")}>
+            <div className={`stack-card ${activeCard!=="debit"?"front":"back"}`}
+              style={{background: activeCardObj?.color
+                ? `linear-gradient(135deg,${cycle.isUrgent?"#dc2626,#b91c1c":`${activeCardObj.color},${activeCardObj.color}`})`
+                : `linear-gradient(135deg,${cycle.isUrgent?"#dc2626,#b91c1c":"#0f4c81,#1e6ab0"})`}}
+              onClick={()=>setActiveCard(lastCreditCardRef.current || cards[0]?.id || "discover")}>
               <div className="card-row1">
-                <div><div className="card-brand">DISCOVER</div><div className="card-chip"></div></div>
+                <div><div className="card-brand">{(activeCardObj?.nombre || "TARJETA").toUpperCase()}</div><div className="card-chip"></div></div>
                 <div className="card-dots">•••</div>
               </div>
               <div className="card-row2">
@@ -1229,7 +1435,17 @@ function App() {
               </div>
             </div>
           </div>
-          <div className="stack-hint">Toca la tarjeta de atras para cambiar a <b>{activeCard==="credit"?"Debito":"Discover"}</b></div>
+          <div className="stack-hint">Toca la tarjeta de atras para cambiar a <b>{activeCard!=="debit"?"Debito":(activeCardObj?.nombre||"tu tarjeta")}</b></div>
+
+          <div style={{display:"flex",gap:8,overflowX:"auto",padding:"2px 2px 12px"}}>
+            {cards.map(c => (
+              <button key={c.id} className="tog" style={{flexShrink:0, background: activeCard===c.id ? (c.color||"#0f4c81") : "#f1f5f9", color: activeCard===c.id ? "#fff" : "#64748b"}}
+                onClick={()=>setActiveCard(c.id)}>
+                {c.nombre}
+              </button>
+            ))}
+            <button className="tog" style={{flexShrink:0}} onClick={()=>setShowCardsModal(true)}>⚙️ Tarjetas</button>
+          </div>
 
           <div className="quick">
             <button className="qbtn" onClick={()=>startAdd(activeCard)}><span className="qicon">➕</span><span>Agregar</span></button>
@@ -1238,7 +1454,7 @@ function App() {
             <button className="qbtn" onClick={loadAll}><span className="qicon">🔄</span><span>Sync</span></button>
           </div>
 
-          {activeCard==="credit" && (
+          {activeCard!=="debit" && (
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,margin:"16px 0"}}>
               <div className="stat blue" style={{padding:"10px 12px"}}>
                 <div className="stat-label">POR INGRESAR</div>
@@ -1255,7 +1471,7 @@ function App() {
             </div>
           )}
 
-          {activeCard==="credit" ? (
+          {activeCard!=="debit" ? (
             <>
               <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
                 <div style={{display:"flex",background:"#e2e8f0",borderRadius:20,padding:"3px",gap:2}}>
@@ -1330,10 +1546,10 @@ function App() {
                     {group.items.map(ex => ExpenseRow(ex, {showAdded:true}))}
                   </div>
                 ))}
-                {creditExpenses.some(e=>!e.added) && (
+                {cardExpenses.some(e=>!e.added) && (
                   <button className="btn btn-g" style={{width:"100%",marginTop:14,borderStyle:"dashed",fontSize:12,padding:"13px"}}
                     onClick={markAllAdded}>
-                    Marcar todos como ingresados ({fmt(creditExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0))})
+                    Marcar todos como ingresados ({fmt(cardExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0))})
                   </button>
                 )}
               </>}
@@ -1473,13 +1689,13 @@ function App() {
             )}
 
             {months.map((month, monthIdx) => {
-              const monthExps = creditExpenses.filter(e=>getMonth(e.date)===month);
+              const monthExps = cardExpenses.filter(e=>getMonth(e.date)===month);
               const total = monthExps.reduce((s,e)=>s+e.amount,0);
               const pending = monthExps.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0);
               const owedTotal = monthExps.reduce((s,e)=>s+owedForExp(e),0);
               const net = total - owedTotal;
               const prevMonth = months[monthIdx + 1];
-              const prevTotal = prevMonth ? creditExpenses.filter(e=>getMonth(e.date)===prevMonth).reduce((s,e)=>s+e.amount,0) : 0;
+              const prevTotal = prevMonth ? cardExpenses.filter(e=>getMonth(e.date)===prevMonth).reduce((s,e)=>s+e.amount,0) : 0;
               const diff = total - prevTotal;
               const diffPct = prevTotal > 0 ? Math.abs(diff/prevTotal*100).toFixed(0) : null;
               const catMap = {};
@@ -1737,7 +1953,8 @@ function LoginGate({ onLogin }) {
 // Reuses the same api helpers as the main app, just without loadAll's fetch
 // of every existing row first.
 function QuickAdd({ onDone }) {
-  const [account, setAccount] = useState("credit");
+  const [cards, setCards] = useState([]);
+  const [account, setAccount] = useState("");
   const [desc, setDesc] = useState("");
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(today());
@@ -1745,6 +1962,13 @@ function QuickAdd({ onDone }) {
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    cardsList().then(rows => {
+      setCards(rows);
+      if (rows.length) setAccount(a => a || rows[0].id);
+    }).catch(() => {});
+  }, []);
 
   function reset() {
     setDesc(""); setAmount(""); setCategory(""); setDate(today()); setSaved(false); setError("");
@@ -1775,7 +1999,9 @@ function QuickAdd({ onDone }) {
           </>
         ) : (
           <form onSubmit={handleSubmit}>
-            <button type="button" className={`lg-btn ${account==="credit"?"lg-btn-p":"lg-btn-g"}`} style={{marginBottom:4}} onClick={()=>setAccount("credit")}>💳 Discover</button>
+            {cards.map(c => (
+              <button key={c.id} type="button" className={`lg-btn ${account===c.id?"lg-btn-p":"lg-btn-g"}`} style={{marginBottom:4}} onClick={()=>setAccount(c.id)}>💳 {c.nombre}</button>
+            ))}
             <button type="button" className={`lg-btn ${account==="debit"?"lg-btn-p":"lg-btn-g"}`} onClick={()=>setAccount("debit")}>🏦 Debito</button>
             <input className="lg-input" placeholder="Descripción" value={desc} onChange={e=>setDesc(e.target.value)} required />
             <input className="lg-input" type="number" step="0.01" inputMode="decimal" placeholder="Monto" value={amount} onChange={e=>setAmount(e.target.value)} required />
