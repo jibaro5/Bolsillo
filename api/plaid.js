@@ -1,7 +1,7 @@
 import { requireAuth } from "../lib/session.js";
 import { plaidConfigured, plaidFetch, encryptToken, decryptToken, mapCategory, isSpending } from "../lib/plaidClient.js";
 import {
-  listItems, addItem, setItemCursor,
+  listItems, addItem, removeItem, setItemCursor,
   listAccounts, upsertAccounts, setAccountCard,
   listInbox, addInboxRows, setInboxStatus,
 } from "../lib/plaidStore.js";
@@ -58,12 +58,13 @@ async function syncItem(item) {
 
 async function state() {
   const items = await listItems();
-  if (!items.length) return { configured: plaidConfigured(), accounts: [], inbox: [] };
+  if (!items.length) return { configured: plaidConfigured(), items: [], accounts: [], inbox: [] };
   const [accounts, inbox] = await Promise.all([listAccounts(), listInbox()]);
   const bank = Object.fromEntries(items.map(i => [i.itemId, i.institution]));
   return {
     configured: plaidConfigured(),
-    accounts: accounts.map(a => ({ accountId: a.accountId, name: a.name, mask: a.mask, subtype: a.subtype, cardId: a.cardId, institution: bank[a.itemId] || "" })),
+    items: items.map(i => ({ itemId: i.itemId, institution: i.institution })),
+    accounts: accounts.map(a => ({ accountId: a.accountId, itemId: a.itemId, name: a.name, mask: a.mask, subtype: a.subtype, cardId: a.cardId, institution: bank[a.itemId] || "" })),
     inbox: inbox.map(r => ({ txId: r.txId, accountId: r.accountId, date: r.date, amount: Number(r.amount), name: r.name, category: r.category })),
   };
 }
@@ -97,7 +98,16 @@ export default async function handler(req, res) {
 
     if (action === "exchange") {
       const data = await plaidFetch("/item/public_token/exchange", { public_token: body.public_token });
-      await addItem({ itemId: data.item_id, institution: body.institution, accessTokenEnc: encryptToken(data.access_token) });
+      // Backstop for connecting the same bank twice. By now Plaid has already
+      // created the Item, so on the Trial plan this still uses one of the 10
+      // slots — but we drop it right away instead of storing duplicate data.
+      const existing = (await listItems()).find(i =>
+        i.institutionId && body.institutionId ? i.institutionId === body.institutionId : i.institution === body.institution);
+      if (existing && body.institution) {
+        await plaidFetch("/item/remove", { access_token: data.access_token }).catch(() => {});
+        return res.status(200).json({ duplicate: true, institution: existing.institution });
+      }
+      await addItem({ itemId: data.item_id, institution: body.institution, institutionId: body.institutionId, accessTokenEnc: encryptToken(data.access_token) });
       const accounts = await plaidFetch("/accounts/get", { access_token: data.access_token });
       await upsertAccounts(data.item_id, accounts.accounts);
       return res.status(200).json({ ok: true });
@@ -107,6 +117,20 @@ export default async function handler(req, res) {
       let added = 0;
       for (const item of await listItems()) added += await syncItem(item);
       return res.status(200).json({ added });
+    }
+
+    if (action === "disconnect") {
+      const item = (await listItems()).find(i => i.itemId === body.itemId);
+      if (!item) return res.status(404).json({ error: "item_not_found" });
+      // If Plaid can't remove it, keep our rows: forgetting an Item that is
+      // still live would leave it unreachable but still counted.
+      try {
+        await plaidFetch("/item/remove", { access_token: decryptToken(item.accessTokenEnc) });
+      } catch (err) {
+        if (err.plaid?.error_code !== "ITEM_NOT_FOUND") throw err;
+      }
+      await removeItem(item.itemId);
+      return res.status(200).json({ ok: true });
     }
 
     if (action === "map-account") {

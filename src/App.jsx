@@ -345,7 +345,7 @@ async function rulesDelete(id) {
 }
 
 // ---- Plaid (bank connections) ----
-const EMPTY_PLAID = { configured:false, accounts:[], inbox:[] };
+const EMPTY_PLAID = { configured:false, items:[], accounts:[], inbox:[] };
 async function plaidState() {
   const res = await fetchWithTimeout("/api/plaid?action=state");
   if (!res.ok) throw new Error(`plaid state failed: ${res.status}`);
@@ -515,6 +515,9 @@ function App() {
   const [plaid, setPlaid] = useState(EMPTY_PLAID);
   const [plaidBusy, setPlaidBusy] = useState(false);
   const [importTxId, setImportTxId] = useState(null);
+  const [confirmConnect, setConfirmConnect] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(null);
+  const [plaidNotice, setPlaidNotice] = useState(null);
   const [activeCard, setActiveCard] = useState("");
   const [showCardsModal, setShowCardsModal] = useState(false);
   const [cardsModalTab, setCardsModalTab] = useState("tarjetas");
@@ -864,7 +867,14 @@ function App() {
     setShowRecForm(true);
   }
 
+  // With banks already connected, warn first: each connection uses one of the
+  // 10 free Production slots, and removing one doesn't give the slot back.
+  function askConnect() {
+    if (plaid.items.length) setConfirmConnect(true);
+    else connectBank();
+  }
   async function connectBank() {
+    setConfirmConnect(false);
     setPlaidBusy(true);
     try {
       await loadPlaidLink();
@@ -873,10 +883,14 @@ function App() {
         token: link_token,
         onSuccess: async (public_token, metadata) => {
           try {
-            await plaidCall("exchange", { public_token, institution: metadata?.institution?.name || "" });
-            await plaidCall("sync");
-            setPlaid(await plaidState());
-            showToast("Banco conectado");
+            const result = await plaidCall("exchange", { public_token, institution: metadata?.institution?.name || "", institutionId: metadata?.institution?.institution_id || "" });
+            if (result.duplicate) {
+              setPlaidNotice(`Ya tenias ${result.institution} conectado. Esta conexion repetida se desconecto y no se guardo. En el plan gratis de Plaid, el cupo que uso ya no se devuelve.`);
+            } else {
+              await plaidCall("sync");
+              setPlaid(await plaidState());
+              showToast("Banco conectado");
+            }
           } catch (err) {
             console.error(err);
             showToast("No se pudo conectar el banco","warn");
@@ -901,6 +915,20 @@ function App() {
     } catch (err) {
       console.error(err);
       showToast("No se pudo sincronizar el banco","warn");
+    }
+    setPlaidBusy(false);
+  }
+  async function disconnectBank() {
+    const item = confirmDisconnect;
+    setConfirmDisconnect(null);
+    setPlaidBusy(true);
+    try {
+      await plaidCall("disconnect", { itemId: item.itemId });
+      setPlaid(await plaidState());
+      showToast(`${item.institution || "Banco"} desconectado`);
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo desconectar","warn");
     }
     setPlaidBusy(false);
   }
@@ -1038,11 +1066,29 @@ function App() {
   // Bank transactions only show up for accounts mapped to a card.
   const mappedCard = Object.fromEntries(plaid.accounts.filter(a => a.cardId).map(a => [a.accountId, a.cardId]));
   const inboxRows = plaid.inbox.filter(r => mappedCard[r.accountId]);
-  // Same amount within 3 days of something already entered by hand.
-  function isPossibleDup(row) {
+  // Finds an expense already entered by hand that this bank transaction might
+  // duplicate: same amount within 3 days, or a similar name with an amount
+  // within 10% (e.g. the bank amount includes a tip).
+  const normName = n => String(n||"").toLowerCase().replace(/[^a-z0-9 ]/g," ").replace(/\s+/g," ").trim();
+  function findSimilar(row) {
     const t = new Date(row.date).getTime();
-    return expenses.some(e => Math.abs(e.amount - row.amount) < 0.005 && Math.abs(new Date(e.date).getTime() - t) <= 3*86400000);
+    const rn = normName(row.name);
+    let close = null;
+    for (const e of expenses) {
+      if (Math.abs(new Date(e.date).getTime() - t) > 3*86400000) continue;
+      if (Math.abs(e.amount - row.amount) < 0.005) return { expense: e, kind: "same" };
+      const en = normName(e.desc);
+      if (!close && rn.length >= 4 && en.length >= 4 && (rn.includes(en) || en.includes(rn)) && Math.abs(e.amount - row.amount) <= row.amount * 0.1) {
+        close = { expense: e, kind: "close" };
+      }
+    }
+    return close;
   }
+  // Possible duplicates first, so they get decided before anything else.
+  const inboxView = inboxRows
+    .map(r => ({ ...r, sim: findSimilar(r) }))
+    .sort((a,b) => (b.sim?1:0) - (a.sim?1:0) || b.date.localeCompare(a.date));
+  const inboxDupCount = inboxView.filter(r => r.sim).length;
   const debitExpenses = expenses.filter(e => e.account === "debit");
 
   const cycle = getCycleInfo(
@@ -1390,21 +1436,28 @@ function App() {
                 {plaid.configured && (
                   <>
                     <div style={{display:"flex",gap:8,marginBottom:14}}>
-                      <button className="btn btn-p" style={{flex:1}} disabled={plaidBusy} onClick={connectBank}>{plaidBusy?"...":"+ Conectar banco"}</button>
+                      <button className="btn btn-p" style={{flex:1}} disabled={plaidBusy} onClick={askConnect}>{plaidBusy?"...":"+ Conectar banco"}</button>
                       {plaid.accounts.length > 0 && <button className="btn btn-g" disabled={plaidBusy} onClick={syncBank}>Sincronizar</button>}
                     </div>
                     {plaid.accounts.length === 0 && <div className="empty-state" style={{padding:20}}>Sin bancos conectados.</div>}
-                    {plaid.accounts.map(a => (
-                      <div key={a.accountId} className="rec-row" style={{flexWrap:"wrap"}}>
-                        <div style={{flex:1,minWidth:140}}>
-                          <div style={{fontSize:13,fontWeight:600}}>{a.name}{a.mask ? ` ••${a.mask}` : ""}</div>
-                          <div style={{fontSize:11,color:"#94a3b8"}}>{a.institution}</div>
+                    {plaid.items.map(item => (
+                      <div key={item.itemId} style={{marginBottom:14}}>
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+                          <div style={{fontSize:11,letterSpacing:1,color:"#64748b",fontWeight:700}}>{(item.institution||"BANCO").toUpperCase()}</div>
+                          <button className="btn btn-d btn-sm" disabled={plaidBusy} onClick={()=>setConfirmDisconnect(item)}>Desconectar</button>
                         </div>
-                        <select className="sel" style={{width:"auto",fontSize:12,padding:"7px 10px"}} value={a.cardId} onChange={e=>mapPlaidAccount(a.accountId, e.target.value)}>
-                          <option value="">No importar</option>
-                          {cards.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-                          <option value="debit">Debito</option>
-                        </select>
+                        {plaid.accounts.filter(a => a.itemId === item.itemId).map(a => (
+                          <div key={a.accountId} className="rec-row" style={{flexWrap:"wrap"}}>
+                            <div style={{flex:1,minWidth:140}}>
+                              <div style={{fontSize:13,fontWeight:600}}>{a.name}{a.mask ? ` ••${a.mask}` : ""}</div>
+                            </div>
+                            <select className="sel" style={{width:"auto",fontSize:12,padding:"7px 10px"}} value={a.cardId} onChange={e=>mapPlaidAccount(a.accountId, e.target.value)}>
+                              <option value="">No importar</option>
+                              {cards.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                              <option value="debit">Debito</option>
+                            </select>
+                          </div>
+                        ))}
                       </div>
                     ))}
                     <div style={{fontSize:11,color:"#94a3b8",marginTop:10}}>Solo se importan las cuentas que asocies a una tarjeta. Los movimientos llegan a "Por revisar" y tu decides cuales agregar.</div>
@@ -1480,6 +1533,44 @@ function App() {
               <button className="btn btn-d" style={{flex:1}} onClick={doDeleteCard}>Eliminar</button>
               <button className="btn btn-g" onClick={()=>setConfirmDeleteCard(null)}>Cancelar</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {confirmConnect && (
+        <div className="modal-overlay" onClick={()=>setConfirmConnect(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:11,letterSpacing:2,color:"#b45309",marginBottom:12,fontWeight:700}}>ANTES DE CONECTAR</div>
+            <div style={{fontSize:14,marginBottom:6,fontWeight:600}}>Ya tienes conectado: {plaid.items.map(i=>i.institution||"un banco").join(", ")}</div>
+            <div style={{fontSize:13,color:"#64748b",marginBottom:20}}>Sigue solo si es un banco distinto. Cada conexion usa uno de los 10 cupos del plan gratis de Plaid, y aunque la desconectes el cupo no se devuelve.</div>
+            <div style={{display:"flex",gap:8}}>
+              <button className="btn btn-p" style={{flex:1}} onClick={connectBank}>Conectar otro banco</button>
+              <button className="btn btn-g" onClick={()=>setConfirmConnect(false)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDisconnect && (
+        <div className="modal-overlay" onClick={()=>setConfirmDisconnect(null)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:11,letterSpacing:2,color:"#dc2626",marginBottom:12,fontWeight:700}}>DESCONECTAR BANCO</div>
+            <div style={{fontSize:16,marginBottom:4,fontWeight:600}}>{confirmDisconnect.institution}</div>
+            <div style={{fontSize:13,color:"#64748b",marginBottom:20}}>Se borra la conexion y sus movimientos pendientes de revisar. Los gastos que ya importaste no se tocan. En el plan gratis de Plaid el cupo no se devuelve.</div>
+            <div style={{display:"flex",gap:8}}>
+              <button className="btn btn-d" style={{flex:1}} onClick={disconnectBank}>Desconectar</button>
+              <button className="btn btn-g" onClick={()=>setConfirmDisconnect(null)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {plaidNotice && (
+        <div className="modal-overlay" onClick={()=>setPlaidNotice(null)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:11,letterSpacing:2,color:"#b45309",marginBottom:12,fontWeight:700}}>BANCO REPETIDO</div>
+            <div style={{fontSize:13,color:"#64748b",marginBottom:20}}>{plaidNotice}</div>
+            <button className="btn btn-p" style={{width:"100%"}} onClick={()=>setPlaidNotice(null)}>Entendido</button>
           </div>
         </div>
       )}
@@ -1777,23 +1868,37 @@ function App() {
 
           {inboxRows.length > 0 && (
             <div className="card" style={{padding:14, marginBottom:16}}>
-              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,marginBottom:10}}>🏦 POR REVISAR ({inboxRows.length})</div>
-              {inboxRows.slice(0,10).map(r => (
-                <div key={r.txId} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"1px solid #f1f5f9"}}>
+              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,marginBottom:10}}>
+                🏦 POR REVISAR ({inboxView.length})
+                {inboxDupCount > 0 && <span style={{color:"#b45309"}}> · ⚠️ {inboxDupCount} posible{inboxDupCount!==1?"s":""} duplicado{inboxDupCount!==1?"s":""}</span>}
+              </div>
+              {inboxView.slice(0,10).map(r => (
+                <div key={r.txId} style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,padding:"8px 0",borderBottom:"1px solid #f1f5f9"}}>
                   <div style={{fontSize:18,width:22,textAlign:"center"}}>{CAT_EMOJI[r.category]||"📦"}</div>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
-                    <div style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
-                      <span>{r.date} · {cardName(mappedCard[r.accountId])}</span>
-                      {isPossibleDup(r) && <span className="badge badge-amber" style={{fontSize:8,padding:"1px 6px"}}>¿Ya lo agregaste?</span>}
-                    </div>
+                    <div style={{fontSize:11,color:"#94a3b8"}}>{r.date} · {cardName(mappedCard[r.accountId])}</div>
                   </div>
                   <div style={{fontSize:14,fontWeight:700}}>{fmt(r.amount)}</div>
-                  <button className="btn btn-p btn-sm" onClick={()=>startImport(r)}>Revisar</button>
-                  <button className="btn btn-g btn-sm" onClick={()=>resolveInbox(r.txId,"dismissed")}>X</button>
+                  {r.sim ? (
+                    <>
+                      <button className="btn btn-p btn-sm" onClick={()=>resolveInbox(r.txId,"dismissed")}>Es el mismo</button>
+                      <button className="btn btn-g btn-sm" onClick={()=>startImport(r)}>Agregar igual</button>
+                    </>
+                  ) : (
+                    <>
+                      <button className="btn btn-p btn-sm" onClick={()=>startImport(r)}>Revisar</button>
+                      <button className="btn btn-g btn-sm" onClick={()=>resolveInbox(r.txId,"dismissed")}>X</button>
+                    </>
+                  )}
+                  {r.sim && (
+                    <div style={{flexBasis:"100%",padding:"6px 8px",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,fontSize:11,color:"#b45309"}}>
+                      ⚠️ {r.sim.kind==="same" ? "Mismo monto que" : "Parecido a"}: <b>{r.sim.expense.desc}</b> · {fmt(r.sim.expense.amount)} · {r.sim.expense.date} · {cardName(r.sim.expense.account)}
+                    </div>
+                  )}
                 </div>
               ))}
-              {inboxRows.length > 10 && <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>y {inboxRows.length-10} mas</div>}
+              {inboxView.length > 10 && <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>y {inboxView.length-10} mas</div>}
             </div>
           )}
 
