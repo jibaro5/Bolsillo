@@ -518,6 +518,8 @@ function App() {
   const [confirmConnect, setConfirmConnect] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(null);
   const [plaidNotice, setPlaidNotice] = useState(null);
+  const [bankView, setBankView] = useState(null);
+  const [bankTx, setBankTx] = useState({ loading:false, rows:[], error:false });
   const [activeCard, setActiveCard] = useState("");
   const [showCardsModal, setShowCardsModal] = useState(false);
   const [cardsModalTab, setCardsModalTab] = useState("tarjetas");
@@ -918,12 +920,33 @@ function App() {
     }
     setPlaidBusy(false);
   }
+  // Two connections to the same bank are listed separately, told apart by when they were made.
+  const sameBankCount = item => plaid.items.filter(x => x.institution === item.institution).length;
+  function bankLabel(item) {
+    const base = item.institution || "Banco";
+    if (sameBankCount(item) < 2) return base;
+    const d = new Date(item.createdAt);
+    if (isNaN(d)) return base;
+    return `${base} · conectado ${d.toLocaleDateString("es",{day:"numeric",month:"short"})} ${d.toLocaleTimeString("es",{hour:"2-digit",minute:"2-digit"})}`;
+  }
+  async function openBank(item) {
+    setBankView(item.itemId);
+    setBankTx({ loading:true, rows:[], error:false });
+    try {
+      const { transactions } = await plaidCall("bank-transactions", { itemId: item.itemId });
+      setBankTx({ loading:false, rows:transactions, error:false });
+    } catch (err) {
+      console.error(err);
+      setBankTx({ loading:false, rows:[], error:true });
+    }
+  }
   async function disconnectBank() {
     const item = confirmDisconnect;
     setConfirmDisconnect(null);
     setPlaidBusy(true);
     try {
       await plaidCall("disconnect", { itemId: item.itemId });
+      setBankView(null);
       setPlaid(await plaidState());
       showToast(`${item.institution || "Banco"} desconectado`);
     } catch (err) {
@@ -1397,7 +1420,7 @@ function App() {
             <div className="ptt" style={{marginBottom:16}}>
               <button className={`pto ${cardsModalTab==="tarjetas"?"on":""}`} onClick={()=>setCardsModalTab("tarjetas")}>Tarjetas</button>
               <button className={`pto ${cardsModalTab==="reglas"?"on":""}`} onClick={()=>{setCardsModalTab("reglas"); startAddRule();}}>Reglas</button>
-              <button className={`pto ${cardsModalTab==="bancos"?"on":""}`} onClick={()=>setCardsModalTab("bancos")}>Bancos</button>
+              <button className={`pto ${cardsModalTab==="bancos"?"on":""}`} onClick={()=>{setCardsModalTab("bancos"); setBankView(null);}}>Bancos</button>
             </div>
 
             {cardsModalTab === "tarjetas" && (
@@ -1430,41 +1453,88 @@ function App() {
               </>
             )}
 
-            {cardsModalTab === "bancos" && (
-              <>
-                {!plaid.configured && <div className="empty-state" style={{padding:20}}>Plaid todavia no esta configurado.</div>}
-                {plaid.configured && (
-                  <>
-                    <div style={{display:"flex",gap:8,marginBottom:14}}>
-                      <button className="btn btn-p" style={{flex:1}} disabled={plaidBusy} onClick={askConnect}>{plaidBusy?"...":"+ Conectar banco"}</button>
-                      {plaid.accounts.length > 0 && <button className="btn btn-g" disabled={plaidBusy} onClick={syncBank}>Sincronizar</button>}
-                    </div>
-                    {plaid.accounts.length === 0 && <div className="empty-state" style={{padding:20}}>Sin bancos conectados.</div>}
-                    {plaid.items.map(item => (
-                      <div key={item.itemId} style={{marginBottom:14}}>
-                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
-                          <div style={{fontSize:11,letterSpacing:1,color:"#64748b",fontWeight:700}}>{(item.institution||"BANCO").toUpperCase()}</div>
-                          <button className="btn btn-d btn-sm" disabled={plaidBusy} onClick={()=>setConfirmDisconnect(item)}>Desconectar</button>
+            {cardsModalTab === "bancos" && (() => {
+              if (!plaid.configured) return <div className="empty-state" style={{padding:20}}>Plaid todavia no esta configurado.</div>;
+              const bank = plaid.items.find(i => i.itemId === bankView);
+
+              if (!bank) return (
+                <>
+                  <div style={{display:"flex",gap:8,marginBottom:14}}>
+                    <button className="btn btn-p" style={{flex:1}} disabled={plaidBusy} onClick={askConnect}>{plaidBusy?"...":"+ Conectar banco"}</button>
+                    {plaid.accounts.length > 0 && <button className="btn btn-g" disabled={plaidBusy} onClick={syncBank}>Sincronizar</button>}
+                  </div>
+                  {plaid.items.length === 0 && <div className="empty-state" style={{padding:20}}>Sin bancos conectados.</div>}
+                  {plaid.items.map(item => {
+                    const accts = plaid.accounts.filter(a => a.itemId === item.itemId);
+                    const pending = plaid.inbox.filter(r => accts.some(a => a.accountId === r.accountId)).length;
+                    return (
+                      <div key={item.itemId} className="rec-row" style={{cursor:"pointer"}} onClick={()=>openBank(item)}>
+                        <span style={{fontSize:20}}>🏦</span>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:13,fontWeight:600}}>{bankLabel(item)}</div>
+                          <div style={{fontSize:11,color:"#94a3b8"}}>{accts.length} {accts.length===1?"cuenta":"cuentas"} · {accts.filter(a=>a.cardId).length} {accts.filter(a=>a.cardId).length===1?"asociada":"asociadas"} · {pending} por revisar</div>
                         </div>
-                        {plaid.accounts.filter(a => a.itemId === item.itemId).map(a => (
-                          <div key={a.accountId} className="rec-row" style={{flexWrap:"wrap"}}>
-                            <div style={{flex:1,minWidth:140}}>
-                              <div style={{fontSize:13,fontWeight:600}}>{a.name}{a.mask ? ` ••${a.mask}` : ""}</div>
-                            </div>
-                            <select className="sel" style={{width:"auto",fontSize:12,padding:"7px 10px"}} value={a.cardId} onChange={e=>mapPlaidAccount(a.accountId, e.target.value)}>
-                              <option value="">No importar</option>
-                              {cards.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-                              <option value="debit">Debito</option>
-                            </select>
-                          </div>
-                        ))}
+                        {sameBankCount(item) > 1 && <span className="badge badge-amber">Repetido</span>}
+                        <span style={{color:"#94a3b8",fontSize:18}}>›</span>
                       </div>
-                    ))}
-                    <div style={{fontSize:11,color:"#94a3b8",marginTop:10}}>Solo se importan las cuentas que asocies a una tarjeta. Los movimientos llegan a "Por revisar" y tu decides cuales agregar.</div>
-                  </>
-                )}
-              </>
-            )}
+                    );
+                  })}
+                  <div style={{fontSize:11,color:"#94a3b8",marginTop:10}}>Toca un banco para ver sus cuentas y transacciones. Solo se importan las cuentas que asocies a una tarjeta; los movimientos llegan a "Por revisar" y tu decides cuales agregar.</div>
+                </>
+              );
+
+              const accts = plaid.accounts.filter(a => a.itemId === bank.itemId);
+              const acctName = id => accts.find(a => a.accountId === id)?.name || "";
+              const statusOf = t => {
+                if (t.status === "imported") return ["Importada","badge-green"];
+                if (t.status === "dismissed") return ["Descartada","badge-gray"];
+                if (t.status === "removed") return ["Eliminada por el banco","badge-gray"];
+                return accts.find(a => a.accountId === t.accountId)?.cardId ? ["Por revisar","badge-blue"] : ["Cuenta sin asociar","badge-gray"];
+              };
+              return (
+                <>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+                    <button className="btn btn-g btn-sm" onClick={()=>setBankView(null)}>‹ Bancos</button>
+                    <button className="btn btn-d btn-sm" disabled={plaidBusy} onClick={()=>setConfirmDisconnect(bank)}>Desconectar</button>
+                  </div>
+                  <div style={{fontSize:16,fontWeight:700,marginBottom:12}}>{bankLabel(bank)}</div>
+
+                  <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,marginBottom:8}}>CUENTAS</div>
+                  {accts.map(a => (
+                    <div key={a.accountId} className="rec-row" style={{flexWrap:"wrap"}}>
+                      <div style={{flex:1,minWidth:140,fontSize:13,fontWeight:600}}>{a.name}{a.mask ? ` ••${a.mask}` : ""}</div>
+                      <select className="sel" style={{width:"auto",fontSize:12,padding:"7px 10px"}} value={a.cardId} onChange={e=>mapPlaidAccount(a.accountId, e.target.value)}>
+                        <option value="">No importar</option>
+                        {cards.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                        <option value="debit">Debito</option>
+                      </select>
+                    </div>
+                  ))}
+
+                  <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,margin:"16px 0 8px"}}>TRANSACCIONES</div>
+                  {bankTx.loading && <div className="empty-state" style={{padding:16}}>Cargando...</div>}
+                  {bankTx.error && <div className="empty-state" style={{padding:16}}>No se pudieron cargar.</div>}
+                  {!bankTx.loading && !bankTx.error && bankTx.rows.length === 0 && <div className="empty-state" style={{padding:16}}>Sin transacciones todavia.</div>}
+                  {bankTx.rows.slice(0,50).map(t => {
+                    const [label, cls] = statusOf(t);
+                    return (
+                      <div key={t.txId} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"1px solid #f1f5f9"}}>
+                        <div style={{fontSize:16,width:20,textAlign:"center"}}>{CAT_EMOJI[t.category]||"📦"}</div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</div>
+                          <div style={{fontSize:11,color:"#94a3b8"}}>{t.date} · {acctName(t.accountId)}</div>
+                        </div>
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontSize:13,fontWeight:700}}>{fmt(t.amount)}</div>
+                          <span className={`badge ${cls}`} style={{fontSize:8,padding:"1px 6px"}}>{label}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {bankTx.rows.length > 50 && <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>y {bankTx.rows.length-50} mas</div>}
+                </>
+              );
+            })()}
 
             {cardsModalTab === "reglas" && (
               <>
@@ -2537,7 +2607,39 @@ export default function AppRoot() {
     setIntent(loginIntent);
   }
 
-  if (!token) return <LoginGate onLogin={handleLogin} />;
-  if (intent === "quickadd") return <QuickAdd key={token} onDone={() => setIntent("dashboard")} />;
-  return <App key={token} />;
+  // Installed web apps can keep running old code after a deploy. Compare the
+  // bundle this page loaded with the one the server serves now, and offer a
+  // reload (never forced, so nothing half-typed is lost).
+  const [stale, setStale] = useState(false);
+  useEffect(() => {
+    const current = document.querySelector('script[type="module"][src*="/assets/index-"]')?.getAttribute("src");
+    if (!current) return;
+    async function check() {
+      try {
+        const html = await (await fetch("/", { cache: "no-store" })).text();
+        const latest = html.match(/\/assets\/index-[A-Za-z0-9_-]+\.js/)?.[0];
+        if (latest && latest !== current) setStale(true);
+      } catch {}
+    }
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    const timer = setInterval(check, 5 * 60 * 1000);
+    check();
+    return () => { document.removeEventListener("visibilitychange", onVisible); clearInterval(timer); };
+  }, []);
+
+  const content = !token ? <LoginGate onLogin={handleLogin} />
+    : intent === "quickadd" ? <QuickAdd key={token} onDone={() => setIntent("dashboard")} />
+    : <App key={token} />;
+  return (
+    <>
+      {stale && (
+        <div style={{position:"fixed",top:0,left:0,right:0,zIndex:1000,background:"#0f4c81",color:"#fff",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,fontSize:13,fontFamily:"'DM Sans',sans-serif"}}>
+          <span>Hay una version nueva de Bolsillo</span>
+          <button onClick={()=>window.location.reload()} style={{background:"#fff",color:"#0f4c81",border:"none",borderRadius:8,padding:"6px 12px",fontWeight:700,fontSize:12,cursor:"pointer"}}>Actualizar</button>
+        </div>
+      )}
+      {content}
+    </>
+  );
 }

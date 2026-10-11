@@ -3,7 +3,7 @@ import { plaidConfigured, plaidFetch, encryptToken, decryptToken, mapCategory, i
 import {
   listItems, addItem, removeItem, setItemCursor,
   listAccounts, upsertAccounts, setAccountCard,
-  listInbox, addInboxRows, setInboxStatus,
+  listInbox, listInboxAll, addInboxRows, setInboxStatus,
 } from "../lib/plaidStore.js";
 
 export const config = { api: { bodyParser: true } };
@@ -63,7 +63,7 @@ async function state() {
   const bank = Object.fromEntries(items.map(i => [i.itemId, i.institution]));
   return {
     configured: plaidConfigured(),
-    items: items.map(i => ({ itemId: i.itemId, institution: i.institution })),
+    items: items.map(i => ({ itemId: i.itemId, institution: i.institution, createdAt: i.createdAt })),
     accounts: accounts.map(a => ({ accountId: a.accountId, itemId: a.itemId, name: a.name, mask: a.mask, subtype: a.subtype, cardId: a.cardId, institution: bank[a.itemId] || "" })),
     inbox: inbox.map(r => ({ txId: r.txId, accountId: r.accountId, date: r.date, amount: Number(r.amount), name: r.name, category: r.category })),
   };
@@ -131,6 +131,16 @@ export default async function handler(req, res) {
       }
       await removeItem(item.itemId);
       return res.status(200).json({ ok: true });
+    }
+
+    if (action === "bank-transactions") {
+      const ids = new Set((await listAccounts()).filter(a => a.itemId === body.itemId).map(a => a.accountId));
+      const rows = (await listInboxAll()).filter(r => ids.has(r.accountId));
+      return res.status(200).json({
+        transactions: rows
+          .map(r => ({ txId: r.txId, accountId: r.accountId, date: r.date, amount: Number(r.amount), name: r.name, category: r.category, status: r.status }))
+          .sort((a, b) => String(b.date).localeCompare(String(a.date))),
+      });
     }
 
     if (action === "map-account") {
