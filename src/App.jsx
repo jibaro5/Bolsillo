@@ -166,6 +166,22 @@ function setSessionToken(token) {
   } catch {}
 }
 function onUnauthorized(cb) { unauthorizedCb = cb; }
+
+// Idle tracking lives here (not inside a component) so other code can keep
+// the session alive. While Plaid Link is open the user can spend minutes on a
+// bank's own page, outside this one, where no activity is seen — without this
+// the idle timer signs them out mid-connection and the result is lost.
+// A held session is a timestamp, not a timer: timers freeze when the page is
+// in the background (iOS), which is exactly when the user is at the bank.
+let lastActivity = Date.now();
+let sessionHeldUntil = 0;
+function noteActivity() { lastActivity = Date.now(); }
+function holdSession(maxMs = 15 * 60 * 1000) {
+  noteActivity();
+  sessionHeldUntil = Date.now() + maxMs;
+  return () => { sessionHeldUntil = 0; noteActivity(); };
+}
+const PLAID_PENDING_KEY = "bolsillo_plaid_pending";
 function logout() {
   setSessionToken(null);
   if (unauthorizedCb) unauthorizedCb();
@@ -558,6 +574,7 @@ function App() {
   const syncQueueRef = useRef({});
   const lastCreditCardRef = useRef("");
   const plaidSyncRef = useRef({ inflight:false, last:0 });
+  const plaidExchangingRef = useRef(false);
 
   useEffect(() => { loadAll(); }, []);
 
@@ -626,6 +643,7 @@ function App() {
       ]);
       setRules(rulesRows);
       setPlaid(plaidData);
+      retryPendingBankConnection();
       if (plaidData.items.length) syncPlaidIfDue(15 * 1000);
       const normalized = [
         ...cardsRows.flatMap((c,i) => normalizeExpenseRows(cardRowsList[i], c.id)),
@@ -902,35 +920,67 @@ function App() {
     if (plaid.items.length) setConfirmConnect(true);
     else connectBank();
   }
+  // Turns Link's one-time public_token into a stored connection. The token is
+  // kept in localStorage until this succeeds (it is valid ~30 minutes), so a
+  // failure or a lost session doesn't strand a bank that Plaid already linked.
+  async function finishBankConnection(pending) {
+    plaidExchangingRef.current = true;
+    try {
+      const result = await plaidCall("exchange", { public_token: pending.public_token, institution: pending.institution, institutionId: pending.institutionId });
+      try { localStorage.removeItem(PLAID_PENDING_KEY); } catch {}
+      if (result.duplicate) {
+        setPlaidNotice(`Ya tenias ${result.institution} conectado. Esta conexion repetida se desconecto y no se guardo. En el plan gratis de Plaid, el cupo que uso ya no se devuelve.`);
+      } else {
+        await plaidCall("sync");
+        setPlaid(await plaidState());
+        showToast("Banco conectado");
+      }
+    } finally {
+      plaidExchangingRef.current = false;
+    }
+  }
+  async function retryPendingBankConnection() {
+    if (plaidExchangingRef.current) return;
+    let pending = null;
+    try { pending = JSON.parse(localStorage.getItem(PLAID_PENDING_KEY) || "null"); } catch {}
+    if (!pending) return;
+    if (Date.now() - pending.at > 25 * 60 * 1000) { try { localStorage.removeItem(PLAID_PENDING_KEY); } catch {} return; }
+    try {
+      await finishBankConnection(pending);
+    } catch (err) {
+      console.warn("Retry of pending bank connection failed", err);
+      // A token Plaid already used or no longer accepts can't be retried.
+      if (/INVALID_PUBLIC_TOKEN|INVALID_LINK_TOKEN/.test(err.message)) { try { localStorage.removeItem(PLAID_PENDING_KEY); } catch {} }
+    }
+  }
   async function connectBank() {
     setConfirmConnect(false);
     setPlaidBusy(true);
+    let stopHold = () => {};
     try {
       await loadPlaidLink();
       const { link_token } = await plaidCall("link-token");
+      stopHold = holdSession();
       const handler = window.Plaid.create({
         token: link_token,
         onSuccess: async (public_token, metadata) => {
+          const pending = { public_token, institution: metadata?.institution?.name || "", institutionId: metadata?.institution?.institution_id || "", at: Date.now() };
+          try { localStorage.setItem(PLAID_PENDING_KEY, JSON.stringify(pending)); } catch {}
           try {
-            const result = await plaidCall("exchange", { public_token, institution: metadata?.institution?.name || "", institutionId: metadata?.institution?.institution_id || "" });
-            if (result.duplicate) {
-              setPlaidNotice(`Ya tenias ${result.institution} conectado. Esta conexion repetida se desconecto y no se guardo. En el plan gratis de Plaid, el cupo que uso ya no se devuelve.`);
-            } else {
-              await plaidCall("sync");
-              setPlaid(await plaidState());
-              showToast("Banco conectado");
-            }
+            await finishBankConnection(pending);
           } catch (err) {
             console.error(err);
-            showToast("No se pudo conectar el banco","warn");
+            showToast(`No se pudo guardar el banco (${String(err.message).slice(0, 70)}). Se reintenta al abrir la app.`, "warn");
           }
+          stopHold();
           setPlaidBusy(false);
         },
-        onExit: () => setPlaidBusy(false),
+        onExit: () => { stopHold(); setPlaidBusy(false); },
       });
       handler.open();
     } catch (err) {
       console.error(err);
+      stopHold();
       showToast(err.message === "plaid_not_configured" ? "Plaid no esta configurado" : "No se pudo abrir Plaid","warn");
       setPlaidBusy(false);
     }
@@ -988,9 +1038,11 @@ function App() {
     try {
       await loadPlaidLink();
       const { link_token } = await plaidCall("link-token", { itemId: item.itemId });
+      const stopHold = holdSession();
       const handler = window.Plaid.create({
         token: link_token,
         onSuccess: async () => {
+          stopHold();
           try {
             await plaidCall("sync");
             setPlaid(await plaidState());
@@ -1001,7 +1053,7 @@ function App() {
           }
           setPlaidBusy(false);
         },
-        onExit: () => setPlaidBusy(false),
+        onExit: () => { stopHold(); setPlaidBusy(false); },
       });
       handler.open();
     } catch (err) {
@@ -2770,11 +2822,11 @@ export default function AppRoot() {
   // mobile tab can have its timers paused while the screen was locked.
   useEffect(() => {
     if (!token) return;
-    let lastActive = Date.now();
-    const markActive = () => { lastActive = Date.now(); };
+    noteActivity();
+    const markActive = noteActivity;
     const events = ["click", "touchstart", "keydown", "scroll"];
     events.forEach(e => window.addEventListener(e, markActive, { passive: true }));
-    const checkIdle = () => { if (Date.now() - lastActive > IDLE_TIMEOUT_MS) logout(); };
+    const checkIdle = () => { if (Date.now() < sessionHeldUntil) return; if (Date.now() - lastActivity > IDLE_TIMEOUT_MS) logout(); };
     const interval = setInterval(checkIdle, 15000);
     const onVisibility = () => { if (document.visibilityState === "visible") checkIdle(); };
     document.addEventListener("visibilitychange", onVisibility);
