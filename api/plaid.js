@@ -60,7 +60,7 @@ async function state() {
     inbox: inbox.map(r => ({
       txId: r.txId, accountId: r.accountId, date: r.date, amount: Number(r.amount), name: r.name, category: r.category,
       status: r.status, pending: String(r.pending).toUpperCase() === "SI",
-      prevAmount: r.prevAmount === "" ? null : Number(r.prevAmount), ajuste: r.ajuste,
+      prevAmount: r.prevAmount === "" ? null : Number(r.prevAmount), ajuste: r.ajuste, transfer: r.tipo === "transferencia",
     })),
   };
 }

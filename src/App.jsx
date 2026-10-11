@@ -2117,6 +2117,7 @@ function App() {
                     <div style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
                       <span>{r.date} · {cardName(mappedCard[r.accountId])}</span>
                       {r.pending && r.status !== "ajuste" && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>En proceso</span>}
+                      {r.transfer && <span className="badge badge-gray" style={{fontSize:8,padding:"1px 6px"}}>Transferencia</span>}
                     </div>
                   </div>
                   <div style={{fontSize:14,fontWeight:700}}>{fmt(r.amount)}</div>
