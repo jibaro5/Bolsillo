@@ -344,6 +344,31 @@ async function rulesDelete(id) {
   return parseJsonSafe(res);
 }
 
+// ---- Plaid (bank connections) ----
+const EMPTY_PLAID = { configured:false, accounts:[], inbox:[] };
+async function plaidState() {
+  const res = await fetchWithTimeout("/api/plaid?action=state");
+  if (!res.ok) throw new Error(`plaid state failed: ${res.status}`);
+  return res.json();
+}
+async function plaidCall(action, body={}) {
+  const res = await fetchWithTimeout("/api/plaid", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ action, ...body }) });
+  const data = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(data?.error || `plaid ${action} failed: ${res.status}`);
+  return data;
+}
+// Link must come straight from Plaid's CDN (they don't allow bundling it).
+function loadPlaidLink() {
+  if (window.Plaid) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("No se pudo cargar Plaid"));
+    document.head.appendChild(s);
+  });
+}
+
 // Given every rule active today, for each category picks the card with the
 // best effective rate — 0 if that card/category/window has already hit its
 // spend cap, computed from the expenses already loaded for that card. A
@@ -487,6 +512,9 @@ function App() {
   const [tab, setTab] = useState("list");
   const [cards, setCards] = useState([]);
   const [rules, setRules] = useState([]);
+  const [plaid, setPlaid] = useState(EMPTY_PLAID);
+  const [plaidBusy, setPlaidBusy] = useState(false);
+  const [importTxId, setImportTxId] = useState(null);
   const [activeCard, setActiveCard] = useState("");
   const [showCardsModal, setShowCardsModal] = useState(false);
   const [cardsModalTab, setCardsModalTab] = useState("tarjetas");
@@ -559,10 +587,15 @@ function App() {
         console.warn("Reglas tab not available yet", err);
         return [];
       });
-      const [recItems, debitRows, rulesRows, ...cardRowsList] = await Promise.all([
-        recurringRead(), debitPromise, rulesPromise, ...cardPromises,
+      const plaidPromise = plaidState().catch(err => {
+        console.warn("Plaid state not available", err);
+        return EMPTY_PLAID;
+      });
+      const [recItems, debitRows, rulesRows, plaidData, ...cardRowsList] = await Promise.all([
+        recurringRead(), debitPromise, rulesPromise, plaidPromise, ...cardPromises,
       ]);
       setRules(rulesRows);
+      setPlaid(plaidData);
       const normalized = [
         ...cardsRows.flatMap((c,i) => normalizeExpenseRows(cardRowsList[i], c.id)),
         ...normalizeExpenseRows(debitRows, "debit"),
@@ -643,6 +676,7 @@ function App() {
       paid: isEdit ? (prevExpense?.paid??false) : false,
     };
     const snapshot = expenses;
+    const importId = isEdit ? null : importTxId;
 
     // Optimistic update: reflect the change and close the form immediately.
     if (isEdit) setExpenses(ex=>ex.map(x=>x.id===editId?expense:x));
@@ -651,6 +685,7 @@ function App() {
     setShowOwed(false);
     setShowForm(false);
     setEditId(null);
+    setImportTxId(null);
 
     // Sync with Google Sheets in the background.
     const api = apiFor(account);
@@ -659,6 +694,7 @@ function App() {
         if (!isEdit && result && result.id != null) {
           setExpenses(ex=>ex.map(x=>x.id===expense.id?{...x,sheetId:result.id}:x));
         }
+        if (importId) resolveInbox(importId, "imported");
         showToast(isEdit?"Gasto actualizado":"Guardado en Sheet");
       })
       .catch(err => {
@@ -812,7 +848,7 @@ function App() {
     setShowForm(true);
     setTimeout(()=>descRef.current?.focus(),100);
   }
-  function cancelEdit() { setEditId(null); setForm(EMPTY_FORM); setShowOwed(false); setShowForm(false); }
+  function cancelEdit() { setEditId(null); setImportTxId(null); setForm(EMPTY_FORM); setShowOwed(false); setShowForm(false); }
   function startAdd(account) {
     setEditId(null);
     setFormAccount(account);
@@ -826,6 +862,70 @@ function App() {
     setEditRecId(item.id);
     setRecForm({name:item.name, amount:String(item.amount), day:String(item.day)});
     setShowRecForm(true);
+  }
+
+  async function connectBank() {
+    setPlaidBusy(true);
+    try {
+      await loadPlaidLink();
+      const { link_token } = await plaidCall("link-token");
+      const handler = window.Plaid.create({
+        token: link_token,
+        onSuccess: async (public_token, metadata) => {
+          try {
+            await plaidCall("exchange", { public_token, institution: metadata?.institution?.name || "" });
+            await plaidCall("sync");
+            setPlaid(await plaidState());
+            showToast("Banco conectado");
+          } catch (err) {
+            console.error(err);
+            showToast("No se pudo conectar el banco","warn");
+          }
+          setPlaidBusy(false);
+        },
+        onExit: () => setPlaidBusy(false),
+      });
+      handler.open();
+    } catch (err) {
+      console.error(err);
+      showToast(err.message === "plaid_not_configured" ? "Plaid no esta configurado" : "No se pudo abrir Plaid","warn");
+      setPlaidBusy(false);
+    }
+  }
+  async function syncBank() {
+    setPlaidBusy(true);
+    try {
+      const { added } = await plaidCall("sync");
+      setPlaid(await plaidState());
+      showToast(added ? `${added} movimientos nuevos` : "Sin movimientos nuevos");
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo sincronizar el banco","warn");
+    }
+    setPlaidBusy(false);
+  }
+  async function mapPlaidAccount(accountId, cardId) {
+    const snapshot = plaid;
+    setPlaid(p => ({ ...p, accounts: p.accounts.map(a => a.accountId===accountId ? { ...a, cardId } : a) }));
+    try { await plaidCall("map-account", { accountId, cardId }); }
+    catch (err) { console.error(err); setPlaid(snapshot); showToast("No se pudo guardar","warn"); }
+  }
+  async function resolveInbox(txId, status) {
+    const snapshot = plaid;
+    setPlaid(p => ({ ...p, inbox: p.inbox.filter(r => r.txId !== txId) }));
+    try { await plaidCall("resolve", { txId, status }); }
+    catch (err) { console.error(err); setPlaid(snapshot); showToast("No se pudo actualizar","warn"); }
+  }
+  // Opens the normal "Nuevo gasto" form prefilled, so owed splits and notes
+  // can still be added before the bank transaction is marked as imported.
+  function startImport(row) {
+    const cardId = plaid.accounts.find(a => a.accountId === row.accountId)?.cardId;
+    setEditId(null);
+    setImportTxId(row.txId);
+    setFormAccount(cardId || cards[0]?.id || "debit");
+    setForm({ ...EMPTY_FORM, desc: row.name, amount: String(row.amount), date: row.date, category: row.category });
+    setShowOwed(false);
+    setShowForm(true);
   }
 
   function startAddCard() {
@@ -934,6 +1034,15 @@ function App() {
   const activeCardObj = cards.find(c => c.id === activeCard);
   const cardExpenses = (activeCard && activeCard !== "debit") ? expenses.filter(e => e.account === activeCard) : [];
   const recommendations = useMemo(() => computeRecommendations(cards, rules, expenses), [cards, rules, expenses]);
+
+  // Bank transactions only show up for accounts mapped to a card.
+  const mappedCard = Object.fromEntries(plaid.accounts.filter(a => a.cardId).map(a => [a.accountId, a.cardId]));
+  const inboxRows = plaid.inbox.filter(r => mappedCard[r.accountId]);
+  // Same amount within 3 days of something already entered by hand.
+  function isPossibleDup(row) {
+    const t = new Date(row.date).getTime();
+    return expenses.some(e => Math.abs(e.amount - row.amount) < 0.005 && Math.abs(new Date(e.date).getTime() - t) <= 3*86400000);
+  }
   const debitExpenses = expenses.filter(e => e.account === "debit");
 
   const cycle = getCycleInfo(
@@ -1242,6 +1351,7 @@ function App() {
             <div className="ptt" style={{marginBottom:16}}>
               <button className={`pto ${cardsModalTab==="tarjetas"?"on":""}`} onClick={()=>setCardsModalTab("tarjetas")}>Tarjetas</button>
               <button className={`pto ${cardsModalTab==="reglas"?"on":""}`} onClick={()=>{setCardsModalTab("reglas"); startAddRule();}}>Reglas</button>
+              <button className={`pto ${cardsModalTab==="bancos"?"on":""}`} onClick={()=>setCardsModalTab("bancos")}>Bancos</button>
             </div>
 
             {cardsModalTab === "tarjetas" && (
@@ -1271,6 +1381,35 @@ function App() {
                     {editingCardId && <button className="btn btn-g" type="button" onClick={startAddCard}>Cancelar</button>}
                   </div>
                 </form>
+              </>
+            )}
+
+            {cardsModalTab === "bancos" && (
+              <>
+                {!plaid.configured && <div className="empty-state" style={{padding:20}}>Plaid todavia no esta configurado.</div>}
+                {plaid.configured && (
+                  <>
+                    <div style={{display:"flex",gap:8,marginBottom:14}}>
+                      <button className="btn btn-p" style={{flex:1}} disabled={plaidBusy} onClick={connectBank}>{plaidBusy?"...":"+ Conectar banco"}</button>
+                      {plaid.accounts.length > 0 && <button className="btn btn-g" disabled={plaidBusy} onClick={syncBank}>Sincronizar</button>}
+                    </div>
+                    {plaid.accounts.length === 0 && <div className="empty-state" style={{padding:20}}>Sin bancos conectados.</div>}
+                    {plaid.accounts.map(a => (
+                      <div key={a.accountId} className="rec-row" style={{flexWrap:"wrap"}}>
+                        <div style={{flex:1,minWidth:140}}>
+                          <div style={{fontSize:13,fontWeight:600}}>{a.name}{a.mask ? ` ••${a.mask}` : ""}</div>
+                          <div style={{fontSize:11,color:"#94a3b8"}}>{a.institution}</div>
+                        </div>
+                        <select className="sel" style={{width:"auto",fontSize:12,padding:"7px 10px"}} value={a.cardId} onChange={e=>mapPlaidAccount(a.accountId, e.target.value)}>
+                          <option value="">No importar</option>
+                          {cards.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                          <option value="debit">Debito</option>
+                        </select>
+                      </div>
+                    ))}
+                    <div style={{fontSize:11,color:"#94a3b8",marginTop:10}}>Solo se importan las cuentas que asocies a una tarjeta. Los movimientos llegan a "Por revisar" y tu decides cuales agregar.</div>
+                  </>
+                )}
               </>
             )}
 
@@ -1635,6 +1774,28 @@ function App() {
             <button className="qbtn" onClick={()=>shareSelected(meDeben)}><span className="qicon">📤</span><span>Compartir</span></button>
             <button className="qbtn" onClick={loadAll}><span className="qicon">🔄</span><span>Sync</span></button>
           </div>
+
+          {inboxRows.length > 0 && (
+            <div className="card" style={{padding:14, marginBottom:16}}>
+              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,marginBottom:10}}>🏦 POR REVISAR ({inboxRows.length})</div>
+              {inboxRows.slice(0,10).map(r => (
+                <div key={r.txId} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"1px solid #f1f5f9"}}>
+                  <div style={{fontSize:18,width:22,textAlign:"center"}}>{CAT_EMOJI[r.category]||"📦"}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
+                    <div style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
+                      <span>{r.date} · {cardName(mappedCard[r.accountId])}</span>
+                      {isPossibleDup(r) && <span className="badge badge-amber" style={{fontSize:8,padding:"1px 6px"}}>¿Ya lo agregaste?</span>}
+                    </div>
+                  </div>
+                  <div style={{fontSize:14,fontWeight:700}}>{fmt(r.amount)}</div>
+                  <button className="btn btn-p btn-sm" onClick={()=>startImport(r)}>Revisar</button>
+                  <button className="btn btn-g btn-sm" onClick={()=>resolveInbox(r.txId,"dismissed")}>X</button>
+                </div>
+              ))}
+              {inboxRows.length > 10 && <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>y {inboxRows.length-10} mas</div>}
+            </div>
+          )}
 
           {recommendations.length > 0 && (
             <div className="card" style={{padding:14, marginBottom:16}}>
