@@ -540,6 +540,7 @@ function App() {
   const [confirmDisconnect, setConfirmDisconnect] = useState(null);
   const [plaidNotice, setPlaidNotice] = useState(null);
   const [bankView, setBankView] = useState(null);
+  const [adjustNote, setAdjustNote] = useState(null);
   const [bankTx, setBankTx] = useState({ loading:false, rows:[], error:false });
   const [activeCard, setActiveCard] = useState("");
   const [showCardsModal, setShowCardsModal] = useState(false);
@@ -702,7 +703,7 @@ function App() {
       paid: isEdit ? (prevExpense?.paid??false) : false,
     };
     const snapshot = expenses;
-    const importId = isEdit ? null : importTxId;
+    const importId = importTxId;
 
     // Optimistic update: reflect the change and close the form immediately.
     if (isEdit) setExpenses(ex=>ex.map(x=>x.id===editId?expense:x));
@@ -712,6 +713,7 @@ function App() {
     setShowForm(false);
     setEditId(null);
     setImportTxId(null);
+    setAdjustNote(null);
 
     // Sync with Google Sheets in the background.
     const api = apiFor(account);
@@ -874,7 +876,7 @@ function App() {
     setShowForm(true);
     setTimeout(()=>descRef.current?.focus(),100);
   }
-  function cancelEdit() { setEditId(null); setImportTxId(null); setForm(EMPTY_FORM); setShowOwed(false); setShowForm(false); }
+  function cancelEdit() { setEditId(null); setImportTxId(null); setAdjustNote(null); setForm(EMPTY_FORM); setShowOwed(false); setShowForm(false); }
   function startAdd(account) {
     setEditId(null);
     setFormAccount(account);
@@ -990,6 +992,25 @@ function App() {
   }
   // Opens the normal "Nuevo gasto" form prefilled, so owed splits and notes
   // can still be added before the bank transaction is marked as imported.
+  // The expense the user entered for an imported pending transaction: same
+  // card, the amount it was imported at, within a few days.
+  function findImportedExpense(row) {
+    const cardId = mappedCard[row.accountId];
+    const t = new Date(row.date).getTime();
+    return expenses
+      .filter(e => e.account === cardId && Math.abs(e.amount - row.prevAmount) < 0.005 && Math.abs(new Date(e.date).getTime() - t) <= 7*86400000)
+      .sort((a,b) => Math.abs(new Date(a.date)-t) - Math.abs(new Date(b.date)-t))[0] || null;
+  }
+  function startAdjust(row, expense) {
+    startEdit(expense);
+    setImportTxId(row.txId);
+    if (row.ajuste === "monto") {
+      setForm(f => ({ ...f, amount: String(row.amount) }));
+      setAdjustNote(`El monto final es ${fmt(row.amount)} (lo agregaste como ${fmt(row.prevAmount)}). Revisa lo que te deben.`);
+    } else {
+      setAdjustNote("Este movimiento en proceso desaparecio del banco (cancelado). Si el gasto ya no existe, cierra esto y eliminalo.");
+    }
+  }
   function startImport(row) {
     const cardId = plaid.accounts.find(a => a.accountId === row.accountId)?.cardId;
     setEditId(null);
@@ -1129,11 +1150,14 @@ function App() {
     }
     return close;
   }
-  // Possible duplicates first, so they get decided before anything else.
+  // Changes to things already imported first (they may affect what someone
+  // owes), then possible duplicates, then the rest by date.
   const inboxView = inboxRows
-    .map(r => ({ ...r, sim: findSimilar(r) }))
-    .sort((a,b) => (b.sim?1:0) - (a.sim?1:0) || b.date.localeCompare(a.date));
+    .map(r => ({ ...r, sim: r.status === "ajuste" ? null : findSimilar(r), match: r.status === "ajuste" ? findImportedExpense(r) : null }))
+    .sort((a,b) => (b.status==="ajuste"?1:0) - (a.status==="ajuste"?1:0) || (b.sim?1:0) - (a.sim?1:0) || b.date.localeCompare(a.date));
   const inboxDupCount = inboxView.filter(r => r.sim).length;
+  const inboxAdjustCount = inboxView.filter(r => r.status === "ajuste").length;
+  const inboxPendingCount = inboxView.filter(r => r.pending && r.status === "review").length;
   const debitExpenses = expenses.filter(e => e.account === "debit");
 
   const cycle = getCycleInfo(
@@ -1511,6 +1535,8 @@ function App() {
                 if (t.status === "imported") return ["Importada","badge-green"];
                 if (t.status === "dismissed") return ["Descartada","badge-gray"];
                 if (t.status === "removed") return ["Eliminada por el banco","badge-gray"];
+                if (t.status === "ajuste") return [t.ajuste === "monto" ? "Cambio el monto" : "Cancelada","badge-amber"];
+                if (t.pending && accts.find(a => a.accountId === t.accountId)?.cardId) return ["En proceso","badge-blue"];
                 return accts.find(a => a.accountId === t.accountId)?.cardId ? ["Por revisar","badge-blue"] : ["Cuenta sin asociar","badge-gray"];
               };
               return (
@@ -1739,6 +1765,7 @@ function App() {
               <div style={{fontSize:16,fontWeight:700,color:editId?"#0f4c81":"#0f172a"}}>{editId?"Editar gasto":"Nuevo gasto"}</div>
               <button className="btn btn-g btn-sm" onClick={cancelEdit}>X</button>
             </div>
+            {adjustNote && <div style={{padding:"8px 10px",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:10,fontSize:12,color:"#b91c1c",marginBottom:14}}>💱 {adjustNote}</div>}
 
             {!editId && (
               <div className="acct-toggle" style={{flexWrap:"wrap"}}>
@@ -1981,6 +2008,8 @@ function App() {
             <div className="card" style={{padding:14, marginBottom:16}}>
               <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,marginBottom:10}}>
                 🏦 POR REVISAR ({inboxView.length})
+                {inboxPendingCount > 0 && <span> · {inboxPendingCount} en proceso</span>}
+                {inboxAdjustCount > 0 && <span style={{color:"#dc2626"}}> · ⚠️ {inboxAdjustCount} cambio{inboxAdjustCount!==1?"s":""} de monto</span>}
                 {inboxDupCount > 0 && <span style={{color:"#b45309"}}> · ⚠️ {inboxDupCount} posible{inboxDupCount!==1?"s":""} duplicado{inboxDupCount!==1?"s":""}</span>}
               </div>
               {inboxView.slice(0,10).map(r => (
@@ -1988,10 +2017,18 @@ function App() {
                   <div style={{fontSize:18,width:22,textAlign:"center"}}>{CAT_EMOJI[r.category]||"📦"}</div>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
-                    <div style={{fontSize:11,color:"#94a3b8"}}>{r.date} · {cardName(mappedCard[r.accountId])}</div>
+                    <div style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
+                      <span>{r.date} · {cardName(mappedCard[r.accountId])}</span>
+                      {r.pending && r.status !== "ajuste" && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>En proceso</span>}
+                    </div>
                   </div>
                   <div style={{fontSize:14,fontWeight:700}}>{fmt(r.amount)}</div>
-                  {r.sim ? (
+                  {r.status === "ajuste" ? (
+                    <>
+                      {r.match && <button className="btn btn-p btn-sm" onClick={()=>startAdjust(r, r.match)}>{r.ajuste==="monto" ? "Ajustar gasto" : "Ver gasto"}</button>}
+                      <button className="btn btn-g btn-sm" onClick={()=>resolveInbox(r.txId,"imported")}>{r.ajuste==="monto" ? "Dejarlo asi" : "Listo"}</button>
+                    </>
+                  ) : r.sim ? (
                     <>
                       <button className="btn btn-p btn-sm" onClick={()=>resolveInbox(r.txId,"dismissed")}>Es el mismo</button>
                       <button className="btn btn-g btn-sm" onClick={()=>startImport(r)}>Agregar igual</button>
@@ -2001,6 +2038,13 @@ function App() {
                       <button className="btn btn-p btn-sm" onClick={()=>startImport(r)}>Revisar</button>
                       <button className="btn btn-g btn-sm" onClick={()=>resolveInbox(r.txId,"dismissed")}>X</button>
                     </>
+                  )}
+                  {r.status === "ajuste" && (
+                    <div style={{flexBasis:"100%",padding:"6px 8px",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,fontSize:11,color:"#b91c1c"}}>
+                      {r.ajuste === "monto"
+                        ? <>💱 El monto final cambio: lo agregaste como <b>{fmt(r.prevAmount)}</b> y el banco cobro <b>{fmt(r.amount)}</b>.{r.match ? ` Gasto: ${r.match.desc}.` : " No encontre el gasto que agregaste."}</>
+                        : <>⚠️ Este movimiento en proceso (<b>{fmt(r.prevAmount)}</b>) desaparecio del banco; puede haber sido una retencion cancelada.{r.match ? ` Gasto: ${r.match.desc}.` : ""}</>}
+                    </div>
                   )}
                   {r.sim && (
                     <div style={{flexBasis:"100%",padding:"6px 8px",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,fontSize:11,color:"#b45309"}}>

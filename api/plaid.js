@@ -1,9 +1,9 @@
 import { requireAuth } from "../lib/session.js";
-import { plaidConfigured, plaidFetch, encryptToken, decryptToken, mapCategory, isSpending } from "../lib/plaidClient.js";
+import { plaidConfigured, plaidFetch, encryptToken, decryptToken } from "../lib/plaidClient.js";
 import {
   listItems, addItem, removeItem, setItemCursor,
   listAccounts, upsertAccounts, setAccountCard,
-  listInbox, listInboxAll, addInboxRows, setInboxStatus,
+  listInbox, listInboxAll, applyBatch, setInboxStatus,
 } from "../lib/plaidStore.js";
 
 export const config = { api: { bodyParser: true } };
@@ -16,18 +16,19 @@ async function syncItem(item) {
 
   async function pullAll() {
     let cursor = startCursor;
-    const added = [], removed = [];
+    const added = [], modified = [], removed = [];
     let accounts = [];
     let hasMore = true;
     while (hasMore) {
       const data = await plaidFetch("/transactions/sync", { access_token: token, cursor, count: 500 });
       added.push(...data.added);
+      modified.push(...data.modified);
       removed.push(...data.removed);
       if (data.accounts?.length) accounts = data.accounts;
       cursor = data.next_cursor;
       hasMore = data.has_more;
     }
-    return { added, removed, accounts, cursor };
+    return { added, modified, removed, accounts, cursor };
   }
 
   let result;
@@ -40,18 +41,7 @@ async function syncItem(item) {
   }
 
   await upsertAccounts(item.itemId, result.accounts);
-  const rows = result.added.filter(isSpending).map(tx => ({
-    txId: tx.transaction_id,
-    accountId: tx.account_id,
-    date: tx.authorized_date || tx.date,
-    amount: tx.amount,
-    name: tx.merchant_name || tx.name,
-    category: mapCategory(tx.personal_finance_category),
-  }));
-  const inserted = await addInboxRows(rows);
-  for (const r of result.removed) {
-    await setInboxStatus(r.transaction_id, "removed").catch(() => {});
-  }
+  const inserted = await applyBatch({ added: result.added, modified: result.modified, removed: result.removed });
   await setItemCursor(item.rowNum, result.cursor || "");
   return inserted;
 }
@@ -65,7 +55,11 @@ async function state() {
     configured: plaidConfigured(),
     items: items.map(i => ({ itemId: i.itemId, institution: i.institution, createdAt: i.createdAt })),
     accounts: accounts.map(a => ({ accountId: a.accountId, itemId: a.itemId, name: a.name, mask: a.mask, subtype: a.subtype, cardId: a.cardId, institution: bank[a.itemId] || "" })),
-    inbox: inbox.map(r => ({ txId: r.txId, accountId: r.accountId, date: r.date, amount: Number(r.amount), name: r.name, category: r.category })),
+    inbox: inbox.map(r => ({
+      txId: r.txId, accountId: r.accountId, date: r.date, amount: Number(r.amount), name: r.name, category: r.category,
+      status: r.status, pending: String(r.pending).toUpperCase() === "SI",
+      prevAmount: r.prevAmount === "" ? null : Number(r.prevAmount), ajuste: r.ajuste,
+    })),
   };
 }
 
@@ -138,7 +132,7 @@ export default async function handler(req, res) {
       const rows = (await listInboxAll()).filter(r => ids.has(r.accountId));
       return res.status(200).json({
         transactions: rows
-          .map(r => ({ txId: r.txId, accountId: r.accountId, date: r.date, amount: Number(r.amount), name: r.name, category: r.category, status: r.status }))
+          .map(r => ({ txId: r.txId, accountId: r.accountId, date: r.date, amount: Number(r.amount), name: r.name, category: r.category, status: r.status, pending: String(r.pending).toUpperCase() === "SI", ajuste: r.ajuste }))
           .sort((a, b) => String(b.date).localeCompare(String(a.date))),
       });
     }
