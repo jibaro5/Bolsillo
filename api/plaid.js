@@ -1,7 +1,7 @@
 import { requireAuth } from "../lib/session.js";
 import { plaidConfigured, plaidFetch, encryptToken, decryptToken } from "../lib/plaidClient.js";
 import {
-  listItems, addItem, removeItem, setItemCursor,
+  listItems, addItem, removeItem, setItemCursor, setItemError,
   listAccounts, upsertAccounts, setAccountCard,
   listInbox, listInboxAll, applyBatch, setInboxStatus,
 } from "../lib/plaidStore.js";
@@ -55,7 +55,7 @@ async function state() {
   const bank = Object.fromEntries(items.map(i => [i.itemId, i.institution]));
   return {
     configured: plaidConfigured(),
-    items: items.map(i => ({ itemId: i.itemId, institution: i.institution, createdAt: i.createdAt })),
+    items: items.map(i => ({ itemId: i.itemId, institution: i.institution, createdAt: i.createdAt, error: i.error || "" })),
     accounts: accounts.map(a => ({ accountId: a.accountId, itemId: a.itemId, name: a.name, mask: a.mask, subtype: a.subtype, cardId: a.cardId, institution: bank[a.itemId] || "" })),
     inbox: inbox.map(r => ({
       txId: r.txId, accountId: r.accountId, date: r.date, amount: Number(r.amount), name: r.name, category: r.category,
@@ -82,13 +82,16 @@ export default async function handler(req, res) {
     if (!plaidConfigured()) return res.status(501).json({ error: "plaid_not_configured" });
 
     if (action === "link-token") {
-      const data = await plaidFetch("/link/token/create", {
-        client_name: "Bolsillo",
-        language: "es",
-        country_codes: ["US"],
-        user: { client_user_id: userLabel },
-        products: ["transactions"],
-      });
+      // With an itemId this is "update mode": the user re-authenticates an
+      // existing connection (no new Item, so no new slot used).
+      const base = { client_name: "Bolsillo", language: "es", country_codes: ["US"], user: { client_user_id: userLabel } };
+      let payload = { ...base, products: ["transactions"] };
+      if (body.itemId) {
+        const item = (await listItems()).find(i => i.itemId === body.itemId);
+        if (!item) return res.status(404).json({ error: "item_not_found" });
+        payload = { ...base, access_token: decryptToken(item.accessTokenEnc) };
+      }
+      const data = await plaidFetch("/link/token/create", payload);
       return res.status(200).json({ link_token: data.link_token });
     }
 
@@ -110,9 +113,21 @@ export default async function handler(req, res) {
     }
 
     if (action === "sync") {
+      // Each bank on its own: one that needs re-login (or is broken) must not
+      // stop the others from syncing.
       let added = 0;
-      for (const item of await listItems()) added += await syncItem(item);
-      return res.status(200).json({ added });
+      const failed = [];
+      for (const item of await listItems()) {
+        try {
+          added += await syncItem(item);
+          if (item.error) await setItemError(item.rowNum, "");
+        } catch (err) {
+          const code = err.plaid?.error_code || "SYNC_ERROR";
+          failed.push({ itemId: item.itemId, institution: item.institution, code });
+          await setItemError(item.rowNum, code).catch(() => {});
+        }
+      }
+      return res.status(200).json({ added, failed });
     }
 
     if (action === "disconnect") {

@@ -541,6 +541,8 @@ function App() {
   const [plaidNotice, setPlaidNotice] = useState(null);
   const [bankView, setBankView] = useState(null);
   const [adjustNote, setAdjustNote] = useState(null);
+  const [plaidSyncing, setPlaidSyncing] = useState(false);
+  const [plaidLastSync, setPlaidLastSync] = useState(null);
   const [bankTx, setBankTx] = useState({ loading:false, rows:[], error:false });
   const [activeCard, setActiveCard] = useState("");
   const [showCardsModal, setShowCardsModal] = useState(false);
@@ -940,15 +942,18 @@ function App() {
     const r = plaidSyncRef.current;
     if (r.inflight || Date.now() - r.last < minGapMs) return;
     r.inflight = true;
+    setPlaidSyncing(true);
     try {
       const { added } = await plaidCall("sync");
       setPlaid(await plaidState());
+      setPlaidLastSync(new Date());
       if (added > 0) showToast(`${added} movimiento${added!==1?"s":""} nuevo${added!==1?"s":""} del banco`);
     } catch (err) {
       console.warn("Plaid auto-sync failed", err);
     }
     r.last = Date.now();   // also after a failure, so a broken connection isn't hammered
     r.inflight = false;
+    setPlaidSyncing(false);
   }
   // While the app is open and visible: sync every 3 minutes, and when coming back to it.
   useEffect(() => {
@@ -963,19 +968,56 @@ function App() {
     const r = plaidSyncRef.current;
     if (r.inflight) { showToast("Ya se esta sincronizando"); return; }
     r.inflight = true;
-    setPlaidBusy(true);
+    setPlaidSyncing(true);
     try {
-      const { added } = await plaidCall("sync");
+      const { added, failed } = await plaidCall("sync");
       setPlaid(await plaidState());
-      showToast(added ? `${added} movimientos nuevos` : "Sin movimientos nuevos");
+      setPlaidLastSync(new Date());
+      if (failed?.length) showToast(`No se pudo sincronizar ${failed.map(f => f.institution || "un banco").join(", ")}`, "warn");
+      else showToast(added ? `${added} movimientos nuevos` : "Sin movimientos nuevos");
     } catch (err) {
       console.error(err);
       showToast("No se pudo sincronizar el banco","warn");
     }
     r.last = Date.now();
     r.inflight = false;
-    setPlaidBusy(false);
+    setPlaidSyncing(false);
   }
+  async function reconnectBank(item) {
+    setPlaidBusy(true);
+    try {
+      await loadPlaidLink();
+      const { link_token } = await plaidCall("link-token", { itemId: item.itemId });
+      const handler = window.Plaid.create({
+        token: link_token,
+        onSuccess: async () => {
+          try {
+            await plaidCall("sync");
+            setPlaid(await plaidState());
+            showToast("Banco reconectado");
+          } catch (err) {
+            console.error(err);
+            showToast("No se pudo sincronizar despues de reconectar","warn");
+          }
+          setPlaidBusy(false);
+        },
+        onExit: () => setPlaidBusy(false),
+      });
+      handler.open();
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo abrir Plaid","warn");
+      setPlaidBusy(false);
+    }
+  }
+  function openBankSettings(item) {
+    setShowCardsModal(true);
+    setCardsModalTab("bancos");
+    openBank(item);
+  }
+  const bankErrorText = code => code === "ITEM_LOGIN_REQUIRED"
+    ? "Este banco necesita que vuelvas a iniciar sesion."
+    : `No se pudo sincronizar este banco (${code}).`;
   // Two connections to the same bank are listed separately, told apart by when they were made.
   const sameBankCount = item => plaid.items.filter(x => x.institution === item.institution).length;
   function bankLabel(item) {
@@ -1553,6 +1595,7 @@ function App() {
                           <div style={{fontSize:13,fontWeight:600}}>{bankLabel(item)}</div>
                           <div style={{fontSize:11,color:"#94a3b8"}}>{accts.length} {accts.length===1?"cuenta":"cuentas"} · {accts.filter(a=>a.cardId).length} {accts.filter(a=>a.cardId).length===1?"asociada":"asociadas"} · {pending} por revisar</div>
                         </div>
+                        {item.error && <span className="badge badge-amber" style={{background:"#fef2f2",color:"#b91c1c",borderColor:"#fecaca"}}>Requiere atencion</span>}
                         {sameBankCount(item) > 1 && <span className="badge badge-amber">Repetido</span>}
                         <span style={{color:"#94a3b8",fontSize:18}}>›</span>
                       </div>
@@ -1579,6 +1622,12 @@ function App() {
                     <button className="btn btn-d btn-sm" disabled={plaidBusy} onClick={()=>setConfirmDisconnect(bank)}>Desconectar</button>
                   </div>
                   <div style={{fontSize:16,fontWeight:700,marginBottom:12}}>{bankLabel(bank)}</div>
+                  {bank.error && (
+                    <div style={{padding:"10px 12px",marginBottom:14,background:"#fef2f2",border:"1px solid #fecaca",borderRadius:10,fontSize:12,color:"#b91c1c"}}>
+                      ⚠️ {bankErrorText(bank.error)}
+                      <div style={{marginTop:8}}><button className="btn btn-d btn-sm" disabled={plaidBusy} onClick={()=>reconnectBank(bank)}>{plaidBusy ? "..." : "Reconectar"}</button></div>
+                    </div>
+                  )}
 
                   <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,marginBottom:8}}>CUENTAS</div>
                   {accts.map(a => (
@@ -2037,14 +2086,29 @@ function App() {
             <button className="qbtn" onClick={loadAll}><span className="qicon">🔄</span><span>Sync</span></button>
           </div>
 
-          {inboxRows.length > 0 && (
+          {(plaid.items.length > 0 || inboxRows.length > 0) && (
             <div className="card" style={{padding:14, marginBottom:16}}>
-              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,marginBottom:10}}>
+              <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:10}}>
+              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700}}>
                 🏦 POR REVISAR ({inboxView.length})
                 {inboxPendingCount > 0 && <span> · {inboxPendingCount} en proceso</span>}
                 {inboxAdjustCount > 0 && <span style={{color:"#dc2626"}}> · ⚠️ {inboxAdjustCount} cambio{inboxAdjustCount!==1?"s":""} de monto</span>}
                 {inboxDupCount > 0 && <span style={{color:"#b45309"}}> · ⚠️ {inboxDupCount} posible{inboxDupCount!==1?"s":""} duplicado{inboxDupCount!==1?"s":""}</span>}
               </div>
+              {plaid.items.length > 0 && (
+                <div style={{textAlign:"right",flexShrink:0}}>
+                  <button className="btn btn-g btn-sm" disabled={plaidSyncing} onClick={syncBank}>{plaidSyncing ? "Sincronizando..." : "🔄 Sincronizar"}</button>
+                  {plaidLastSync && <div style={{fontSize:9,color:"#94a3b8",marginTop:3}}>Ultima: {plaidLastSync.toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})}</div>}
+                </div>
+              )}
+              </div>
+              {plaid.items.filter(i => i.error).map(i => (
+                <div key={i.itemId} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",marginBottom:8,background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,fontSize:11,color:"#b91c1c"}}>
+                  <span style={{flex:1}}>⚠️ <b>{i.institution || "Banco"}</b>: {bankErrorText(i.error)}</span>
+                  <button className="btn btn-d btn-sm" onClick={()=>openBankSettings(i)}>Ver</button>
+                </div>
+              ))}
+              {inboxView.length === 0 && <div style={{fontSize:12,color:"#94a3b8",padding:"6px 0"}}>Todo al dia ✓</div>}
               {inboxView.slice(0,10).map(r => (
                 <div key={r.txId} style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,padding:"8px 0",borderBottom:"1px solid #f1f5f9"}}>
                   <div style={{fontSize:18,width:22,textAlign:"center"}}>{CAT_EMOJI[r.category]||"📦"}</div>
