@@ -560,6 +560,7 @@ function App() {
   const [plaidSyncing, setPlaidSyncing] = useState(false);
   const [plaidLastSync, setPlaidLastSync] = useState(null);
   const [bankTx, setBankTx] = useState({ loading:false, rows:[], error:false });
+  const [bankStatus, setBankStatus] = useState(null);
   const [activeCard, setActiveCard] = useState("");
   const [showCardsModal, setShowCardsModal] = useState(false);
   const [cardsModalTab, setCardsModalTab] = useState("tarjetas");
@@ -1082,6 +1083,8 @@ function App() {
   async function openBank(item) {
     setBankView(item.itemId);
     setBankTx({ loading:true, rows:[], error:false });
+    setBankStatus(null);
+    plaidCall("bank-status", { itemId: item.itemId }).then(setBankStatus).catch(() => setBankStatus({ unavailable:true }));
     try {
       const { transactions } = await plaidCall("bank-transactions", { itemId: item.itemId });
       setBankTx({ loading:false, rows:transactions, error:false });
@@ -1681,6 +1684,19 @@ function App() {
                     </div>
                   )}
 
+                  {bankStatus && !bankStatus.unavailable && (() => {
+                    const last = bankStatus.lastSuccessfulUpdate ? new Date(bankStatus.lastSuccessfulUpdate) : null;
+                    const hours = last ? (Date.now() - last.getTime()) / 3600000 : null;
+                    const stale = !last || hours > 36;
+                    return (
+                      <div style={{padding:"8px 10px",marginBottom:14,borderRadius:8,fontSize:11,background:stale?"#fffbeb":"#f0fdf4",border:`1px solid ${stale?"#fde68a":"#bbf7d0"}`,color:stale?"#b45309":"#047857"}}>
+                        {last
+                          ? <>Plaid actualizo los datos de este banco por ultima vez: <b>{last.toLocaleString("es",{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"})}</b>.{stale ? " La app solo ve lo que Plaid ya trajo del banco, asi que compras mas recientes que eso aun no pueden aparecer." : ""}</>
+                          : <>Plaid todavia no ha completado la primera carga de este banco. Los movimientos aparecen cuando termine.</>}
+                        {bankStatus.lastFailedUpdate && <div style={{marginTop:4}}>Ultimo intento fallido de Plaid con el banco: {new Date(bankStatus.lastFailedUpdate).toLocaleString("es",{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"})}.</div>}
+                      </div>
+                    );
+                  })()}
                   <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,marginBottom:8}}>CUENTAS</div>
                   {accts.map(a => (
                     <div key={a.accountId} className="rec-row" style={{flexWrap:"wrap"}}>

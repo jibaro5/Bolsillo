@@ -144,6 +144,20 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
+    if (action === "bank-status") {
+      // How fresh is Plaid's own copy of this bank's data? Our sync can only
+      // return what Plaid already has, so this explains "my purchases aren't here".
+      const item = (await listItems()).find(i => i.itemId === body.itemId);
+      if (!item) return res.status(404).json({ error: "item_not_found" });
+      const data = await plaidFetch("/item/get", { access_token: decryptToken(item.accessTokenEnc) });
+      const t = data.status?.transactions || {};
+      return res.status(200).json({
+        lastSuccessfulUpdate: t.last_successful_update || null,
+        lastFailedUpdate: t.last_failed_update || null,
+        error: data.item?.error?.error_code || null,
+      });
+    }
+
     if (action === "bank-transactions") {
       const ids = new Set((await listAccounts()).filter(a => a.itemId === body.itemId).map(a => a.accountId));
       const rows = (await listInboxAll()).filter(r => ids.has(r.accountId));
