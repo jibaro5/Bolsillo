@@ -49,7 +49,9 @@ async function syncItem(item) {
 async function state() {
   const items = await listItems();
   if (!items.length) return { configured: plaidConfigured(), items: [], accounts: [], inbox: [] };
-  const [accounts, inbox] = await Promise.all([listAccounts(), listInbox()]);
+  const [accounts, rawInbox] = await Promise.all([listAccounts(), listInbox()]);
+  // Two devices syncing at the same instant could store a transaction twice; show it once.
+  const inbox = [...new Map(rawInbox.map(r => [r.txId, r])).values()];
   const bank = Object.fromEntries(items.map(i => [i.itemId, i.institution]));
   return {
     configured: plaidConfigured(),

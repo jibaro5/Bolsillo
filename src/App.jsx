@@ -555,6 +555,7 @@ function App() {
   const descRef = useRef();
   const syncQueueRef = useRef({});
   const lastCreditCardRef = useRef("");
+  const plaidSyncRef = useRef({ inflight:false, last:0 });
 
   useEffect(() => { loadAll(); }, []);
 
@@ -623,6 +624,7 @@ function App() {
       ]);
       setRules(rulesRows);
       setPlaid(plaidData);
+      if (plaidData.items.length) syncPlaidIfDue(15 * 1000);
       const normalized = [
         ...cardsRows.flatMap((c,i) => normalizeExpenseRows(cardRowsList[i], c.id)),
         ...normalizeExpenseRows(debitRows, "debit"),
@@ -931,7 +933,36 @@ function App() {
       setPlaidBusy(false);
     }
   }
+  // Pulls new bank activity in the background. Only one sync runs at a time
+  // (two at once could store the same transaction twice) and none starts
+  // before `minGapMs` has passed since the last one.
+  async function syncPlaidIfDue(minGapMs) {
+    const r = plaidSyncRef.current;
+    if (r.inflight || Date.now() - r.last < minGapMs) return;
+    r.inflight = true;
+    try {
+      const { added } = await plaidCall("sync");
+      setPlaid(await plaidState());
+      if (added > 0) showToast(`${added} movimiento${added!==1?"s":""} nuevo${added!==1?"s":""} del banco`);
+    } catch (err) {
+      console.warn("Plaid auto-sync failed", err);
+    }
+    r.last = Date.now();   // also after a failure, so a broken connection isn't hammered
+    r.inflight = false;
+  }
+  // While the app is open and visible: sync every 3 minutes, and when coming back to it.
+  useEffect(() => {
+    if (!plaid.configured || plaid.items.length === 0) return;
+    const tick = () => { if (document.visibilityState === "visible") syncPlaidIfDue(2 * 60 * 1000); };
+    const timer = setInterval(tick, 3 * 60 * 1000);
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", tick); };
+  }, [plaid.configured, plaid.items.length]);
+
   async function syncBank() {
+    const r = plaidSyncRef.current;
+    if (r.inflight) { showToast("Ya se esta sincronizando"); return; }
+    r.inflight = true;
     setPlaidBusy(true);
     try {
       const { added } = await plaidCall("sync");
@@ -941,6 +972,8 @@ function App() {
       console.error(err);
       showToast("No se pudo sincronizar el banco","warn");
     }
+    r.last = Date.now();
+    r.inflight = false;
     setPlaidBusy(false);
   }
   // Two connections to the same bank are listed separately, told apart by when they were made.
