@@ -375,9 +375,23 @@ function loadPlaidLink() {
 // rule with no fechaInicio/fechaFin is a permanent (non-rotating) bonus,
 // tracked against the current calendar month; one with both set is a
 // rotating window (e.g. a quarter) tracked against that exact window.
+// The calendar quarter / month containing `nowStr` (YYYY-MM-DD), for rules
+// whose cap resets on a schedule instead of between fixed dates.
+function periodWindow(periodo, nowStr) {
+  const [y, m] = nowStr.split("-").map(Number);
+  const pad = n => String(n).padStart(2, "0");
+  if (periodo === "trimestre") {
+    const startMonth = Math.floor((m - 1) / 3) * 3 + 1;
+    return { start: `${y}-${pad(startMonth)}-01`, end: localDateStr(new Date(y, startMonth + 2, 0)) };
+  }
+  if (periodo === "mes") return { start: `${y}-${pad(m)}-01`, end: localDateStr(new Date(y, m, 0)) };
+  return null;
+}
+
 function computeRecommendations(cards, rules, expenses) {
   const now = today();
   const activeRules = rules.filter(r => {
+    if (r.periodo) return true;
     if (r.fechaInicio && now < r.fechaInicio) return false;
     if (r.fechaFin && now > r.fechaFin) return false;
     return true;
@@ -386,9 +400,11 @@ function computeRecommendations(cards, rules, expenses) {
   activeRules.forEach(r => { (byCategory[r.categoria] = byCategory[r.categoria] || []).push(r); });
   const results = Object.entries(byCategory).map(([categoria, catRules]) => {
     const scored = catRules.map(r => {
-      const windowStart = r.fechaInicio || `${now.slice(0,7)}-01`;
+      const win = periodWindow(r.periodo, now);
+      const windowStart = win ? win.start : (r.fechaInicio || `${now.slice(0,7)}-01`);
+      const windowEnd = win ? win.end : r.fechaFin;
       const spent = expenses
-        .filter(e => e.account === r.cardId && e.category === categoria && e.date >= windowStart && (!r.fechaFin || e.date <= r.fechaFin))
+        .filter(e => e.account === r.cardId && e.category === categoria && e.date >= windowStart && (!windowEnd || e.date <= windowEnd))
         .reduce((s,e) => s + e.amount, 0);
       const tasa = parseFloat(r.tasa) || 0;
       const tope = parseFloat(r.tope) || 0;
@@ -527,7 +543,7 @@ function App() {
   const [cardForm, setCardForm] = useState({ nombre:"", color:"#0f4c81", cierreDay:"", dueDay:"" });
   const [confirmDeleteCard, setConfirmDeleteCard] = useState(null);
   const [editingRuleId, setEditingRuleId] = useState(null);
-  const [ruleForm, setRuleForm] = useState({ cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false });
+  const [ruleForm, setRuleForm] = useState({ cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false, periodo:"" });
   const [confirmDeleteRule, setConfirmDeleteRule] = useState(null);
   const [confirmBulkPaid, setConfirmBulkPaid] = useState(false);
   const descRef = useRef();
@@ -1020,7 +1036,7 @@ function App() {
     }
   }
 
-  const EMPTY_RULE = { cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false };
+  const EMPTY_RULE = { cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false, periodo:"trimestre" };
   function startAddRule() {
     setEditingRuleId(null);
     setRuleForm({ ...EMPTY_RULE, cardId: cards[0]?.id || "" });
@@ -1030,18 +1046,19 @@ function App() {
     setRuleForm({
       cardId: rule.cardId, categoria: rule.categoria, tasa: String(rule.tasa||""),
       fechaInicio: rule.fechaInicio||"", fechaFin: rule.fechaFin||"",
-      tope: String(rule.tope||""), requiereActivacion: !!rule.requiereActivacion,
+      tope: String(rule.tope||""), requiereActivacion: !!rule.requiereActivacion, periodo: rule.periodo||"",
     });
   }
   async function submitRuleForm(e) {
     e.preventDefault();
     if (!ruleForm.cardId || !ruleForm.categoria || !ruleForm.tasa) return;
+    const payload = ruleForm.periodo ? { ...ruleForm, fechaInicio:"", fechaFin:"" } : ruleForm;
     try {
       if (editingRuleId) {
-        await rulesEdit(editingRuleId, ruleForm);
+        await rulesEdit(editingRuleId, payload);
         showToast("Regla actualizada");
       } else {
-        await rulesAdd(ruleForm);
+        await rulesAdd(payload);
         showToast("Regla agregada");
       }
       setEditingRuleId(null);
@@ -1547,7 +1564,7 @@ function App() {
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:13,fontWeight:600}}>{c?.nombre||r.cardId} · {r.categoria} · {r.tasa}%</div>
                         <div style={{fontSize:11,color:"#94a3b8"}}>
-                          {r.fechaInicio || r.fechaFin ? `${r.fechaInicio||"..."} a ${r.fechaFin||"..."}` : "Permanente"}
+                          {r.periodo === "trimestre" ? "Siempre · tope por trimestre" : r.periodo === "mes" ? "Siempre · tope por mes" : (r.fechaInicio || r.fechaFin ? `${r.fechaInicio||"..."} a ${r.fechaFin||"..."}` : "Permanente")}
                           {r.tope ? ` · tope $${r.tope}` : ""}{r.requiereActivacion ? " · requiere activar" : ""}
                         </div>
                       </div>
@@ -1570,11 +1587,21 @@ function App() {
                     </select>
                   </div>
                   <input className="inp" style={{marginBottom:8}} type="number" min="0" step="0.1" placeholder="Tasa % (ej. 5)" value={ruleForm.tasa} onChange={e=>setRuleForm(f=>({...f,tasa:e.target.value}))} required />
-                  <div style={{fontSize:10,color:"#94a3b8",marginBottom:4}}>Fechas (deja vacio si es un beneficio permanente):</div>
-                  <div style={{display:"flex",gap:8,marginBottom:8}}>
-                    <input className="inp" type="date" value={ruleForm.fechaInicio} onChange={e=>setRuleForm(f=>({...f,fechaInicio:e.target.value}))} />
-                    <input className="inp" type="date" value={ruleForm.fechaFin} onChange={e=>setRuleForm(f=>({...f,fechaFin:e.target.value}))} />
-                  </div>
+                  <div style={{fontSize:10,color:"#94a3b8",marginBottom:4}}>Cuando aplica:</div>
+                  <select className="sel" style={{marginBottom:8}} value={ruleForm.periodo} onChange={e=>setRuleForm(f=>({...f,periodo:e.target.value}))}>
+                    <option value="trimestre">Siempre · el tope se reinicia cada trimestre</option>
+                    <option value="mes">Siempre · el tope se reinicia cada mes</option>
+                    <option value="">Solo entre fechas (categoria rotativa)</option>
+                  </select>
+                  {!ruleForm.periodo && (
+                    <>
+                      <div style={{fontSize:10,color:"#94a3b8",marginBottom:4}}>Fechas (deja vacio si es permanente):</div>
+                      <div style={{display:"flex",gap:8,marginBottom:8}}>
+                        <input className="inp" type="date" value={ruleForm.fechaInicio} onChange={e=>setRuleForm(f=>({...f,fechaInicio:e.target.value}))} />
+                        <input className="inp" type="date" value={ruleForm.fechaFin} onChange={e=>setRuleForm(f=>({...f,fechaFin:e.target.value}))} />
+                      </div>
+                    </>
+                  )}
                   <input className="inp" style={{marginBottom:8}} type="number" min="0" step="0.01" placeholder="Tope de gasto (opcional)" value={ruleForm.tope} onChange={e=>setRuleForm(f=>({...f,tope:e.target.value}))} />
                   <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,fontSize:12,color:"#64748b"}}>
                     <input type="checkbox" checked={ruleForm.requiereActivacion} onChange={e=>setRuleForm(f=>({...f,requiereActivacion:e.target.checked}))} />
