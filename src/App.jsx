@@ -396,6 +396,10 @@ function computeRecommendations(cards, rules, expenses) {
     if (r.fechaFin && now > r.fechaFin) return false;
     return true;
   });
+  // Rules sharing a cap: same card + same grupo. Spend counts across all of
+  // that group's categories together, not per category.
+  const groupCats = {};
+  rules.forEach(r => { if (r.grupo) (groupCats[`${r.cardId}|${r.grupo}`] = groupCats[`${r.cardId}|${r.grupo}`] || new Set()).add(r.categoria); });
   const byCategory = {};
   activeRules.forEach(r => { (byCategory[r.categoria] = byCategory[r.categoria] || []).push(r); });
   const results = Object.entries(byCategory).map(([categoria, catRules]) => {
@@ -403,13 +407,14 @@ function computeRecommendations(cards, rules, expenses) {
       const win = periodWindow(r.periodo, now);
       const windowStart = win ? win.start : (r.fechaInicio || `${now.slice(0,7)}-01`);
       const windowEnd = win ? win.end : r.fechaFin;
+      const cats = r.grupo ? groupCats[`${r.cardId}|${r.grupo}`] : new Set([categoria]);
       const spent = expenses
-        .filter(e => e.account === r.cardId && e.category === categoria && e.date >= windowStart && (!windowEnd || e.date <= windowEnd))
+        .filter(e => e.account === r.cardId && cats.has(e.category) && e.date >= windowStart && (!windowEnd || e.date <= windowEnd))
         .reduce((s,e) => s + e.amount, 0);
       const tasa = parseFloat(r.tasa) || 0;
       const tope = parseFloat(r.tope) || 0;
       const overCap = tope > 0 && spent >= tope;
-      return { ...r, spent, tasa, tope, overCap, effectiveRate: overCap ? 0 : tasa };
+      return { ...r, spent, tasa, tope, overCap, shared: cats.size > 1, effectiveRate: overCap ? 0 : tasa };
     }).sort((a,b) => b.effectiveRate - a.effectiveRate || b.tasa - a.tasa);
     return { categoria, best: scored[0], alternatives: scored.slice(1) };
   });
@@ -543,7 +548,7 @@ function App() {
   const [cardForm, setCardForm] = useState({ nombre:"", color:"#0f4c81", cierreDay:"", dueDay:"" });
   const [confirmDeleteCard, setConfirmDeleteCard] = useState(null);
   const [editingRuleId, setEditingRuleId] = useState(null);
-  const [ruleForm, setRuleForm] = useState({ cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false, periodo:"" });
+  const [ruleForm, setRuleForm] = useState({ cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false, periodo:"", grupo:"" });
   const [confirmDeleteRule, setConfirmDeleteRule] = useState(null);
   const [confirmBulkPaid, setConfirmBulkPaid] = useState(false);
   const descRef = useRef();
@@ -1036,7 +1041,7 @@ function App() {
     }
   }
 
-  const EMPTY_RULE = { cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false, periodo:"trimestre" };
+  const EMPTY_RULE = { cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false, periodo:"trimestre", grupo:"" };
   function startAddRule() {
     setEditingRuleId(null);
     setRuleForm({ ...EMPTY_RULE, cardId: cards[0]?.id || "" });
@@ -1046,7 +1051,7 @@ function App() {
     setRuleForm({
       cardId: rule.cardId, categoria: rule.categoria, tasa: String(rule.tasa||""),
       fechaInicio: rule.fechaInicio||"", fechaFin: rule.fechaFin||"",
-      tope: String(rule.tope||""), requiereActivacion: !!rule.requiereActivacion, periodo: rule.periodo||"",
+      tope: String(rule.tope||""), requiereActivacion: !!rule.requiereActivacion, periodo: rule.periodo||"", grupo: rule.grupo||"",
     });
   }
   async function submitRuleForm(e) {
@@ -1565,7 +1570,7 @@ function App() {
                         <div style={{fontSize:13,fontWeight:600}}>{c?.nombre||r.cardId} · {r.categoria} · {r.tasa}%</div>
                         <div style={{fontSize:11,color:"#94a3b8"}}>
                           {r.periodo === "trimestre" ? "Siempre · tope por trimestre" : r.periodo === "mes" ? "Siempre · tope por mes" : (r.fechaInicio || r.fechaFin ? `${r.fechaInicio||"..."} a ${r.fechaFin||"..."}` : "Permanente")}
-                          {r.tope ? ` · tope $${r.tope}` : ""}{r.requiereActivacion ? " · requiere activar" : ""}
+                          {r.tope ? ` · tope $${r.tope}${r.grupo ? ` compartido (${r.grupo})` : ""}` : ""}{r.requiereActivacion ? " · requiere activar" : ""}
                         </div>
                       </div>
                       <button className="btn btn-g btn-sm" style={{padding:"6px 8px"}} onClick={()=>startEditRule(r)}>E</button>
@@ -1603,6 +1608,15 @@ function App() {
                     </>
                   )}
                   <input className="inp" style={{marginBottom:8}} type="number" min="0" step="0.01" placeholder="Tope de gasto (opcional)" value={ruleForm.tope} onChange={e=>setRuleForm(f=>({...f,tope:e.target.value}))} />
+                  {ruleForm.tope && (
+                    <>
+                      <input className="inp" style={{marginBottom:4}} list="grupos-tope" placeholder="Tope compartido con otras categorias (opcional)" value={ruleForm.grupo} onChange={e=>setRuleForm(f=>({...f,grupo:e.target.value}))} />
+                      <datalist id="grupos-tope">
+                        {[...new Set(rules.filter(r => r.cardId === ruleForm.cardId && r.grupo).map(r => r.grupo))].map(g => <option key={g} value={g} />)}
+                      </datalist>
+                      <div style={{fontSize:10,color:"#94a3b8",marginBottom:8}}>Pon el mismo nombre en cada regla que comparta el tope (ej. "Gas y restaurantes") y el gasto se cuenta junto.</div>
+                    </>
+                  )}
                   <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,fontSize:12,color:"#64748b"}}>
                     <input type="checkbox" checked={ruleForm.requiereActivacion} onChange={e=>setRuleForm(f=>({...f,requiereActivacion:e.target.checked}))} />
                     Requiere activarla cada periodo
@@ -2020,6 +2034,7 @@ function App() {
                           <div style={{width:`${pct}%`,height:"100%",background:pct>=100?"#dc2626":pct>=80?"#b45309":"#0f4c81"}}></div>
                         </div>
                       )}
+                      {pct !== null && <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{fmt(rec.best.spent)} de {fmt(rec.best.tope)}{rec.best.shared ? " (tope compartido)" : ""}</div>}
                     </div>
                     <div style={{textAlign:"right"}}>
                       <div style={{fontSize:15,fontWeight:700,color: rec.best.overCap ? "#dc2626" : "#059669"}}>{rec.best.effectiveRate}%</div>
