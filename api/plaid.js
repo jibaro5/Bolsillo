@@ -48,7 +48,6 @@ async function syncItem(item) {
 
 async function state() {
   const items = await listItems();
-  if (!items.length) return { configured: plaidConfigured(), items: [], accounts: [], inbox: [] };
   const [accounts, rawInbox] = await Promise.all([listAccounts(), listInbox()]);
   // Two devices syncing at the same instant could store a transaction twice; show it once.
   const inbox = [...new Map(rawInbox.map(r => [r.txId, r])).values()];
@@ -60,7 +59,7 @@ async function state() {
     inbox: inbox.map(r => ({
       txId: r.txId, accountId: r.accountId, date: r.date, amount: Number(r.amount), name: r.name, category: r.category,
       status: r.status, pending: String(r.pending).toUpperCase() === "SI",
-      prevAmount: r.prevAmount === "" ? null : Number(r.prevAmount), ajuste: r.ajuste, transfer: r.tipo === "transferencia",
+      prevAmount: r.prevAmount === "" ? null : Number(r.prevAmount), ajuste: r.ajuste, transfer: r.tipo === "transferencia", applepay: r.tipo === "applepay",
     })),
   };
 }

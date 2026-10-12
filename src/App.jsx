@@ -1006,10 +1006,13 @@ function App() {
     r.inflight = false;
     setPlaidSyncing(false);
   }
-  // While the app is open and visible: sync every 3 minutes, and when coming back to it.
+  // While the app is open and visible: refresh every 3 minutes (and sync banks), and when coming back to it.
   useEffect(() => {
-    if (!plaid.configured || plaid.items.length === 0) return;
-    const tick = () => { if (document.visibilityState === "visible") syncPlaidIfDue(2 * 60 * 1000); };
+    const tick = () => {
+      if (document.visibilityState !== "visible") return;
+      plaidState().then(setPlaid).catch(() => {});   // cheap read: shows an Apple Pay payment right away
+      if (plaid.configured && plaid.items.length) syncPlaidIfDue(2 * 60 * 1000);
+    };
     const timer = setInterval(tick, 3 * 60 * 1000);
     document.addEventListener("visibilitychange", tick);
     return () => { clearInterval(timer); document.removeEventListener("visibilitychange", tick); };
@@ -1125,7 +1128,7 @@ function App() {
   // The expense the user entered for an imported pending transaction: same
   // card, the amount it was imported at, within a few days.
   function findImportedExpense(row) {
-    const cardId = mappedCard[row.accountId];
+    const cardId = inboxCardOf(row);
     const t = new Date(row.date).getTime();
     return expenses
       .filter(e => e.account === cardId && Math.abs(e.amount - row.prevAmount) < 0.005 && Math.abs(new Date(e.date).getTime() - t) <= 7*86400000)
@@ -1142,11 +1145,13 @@ function App() {
     }
   }
   function startImport(row) {
-    const cardId = plaid.accounts.find(a => a.accountId === row.accountId)?.cardId;
+    const cardId = inboxCardOf(row);
     setEditId(null);
     setImportTxId(row.txId);
     setFormAccount(cardId || cards[0]?.id || "debit");
-    setForm({ ...EMPTY_FORM, desc: row.name, amount: String(row.amount), date: row.date, category: row.category });
+    // Apple Pay payments arrive without a category; reuse the one last used for the same name.
+    const category = row.category || categoryByName[row.name.trim().toLowerCase()] || "";
+    setForm({ ...EMPTY_FORM, desc: row.name, amount: String(row.amount), date: row.date, category });
     setShowOwed(false);
     setShowForm(true);
   }
@@ -1261,7 +1266,10 @@ function App() {
 
   // Bank transactions only show up for accounts mapped to a card.
   const mappedCard = Object.fromEntries(plaid.accounts.filter(a => a.cardId).map(a => [a.accountId, a.cardId]));
-  const inboxRows = plaid.inbox.filter(r => mappedCard[r.accountId]);
+  // Apple Pay payments belong straight to a Bolsillo card ("card:<id>"); bank
+  // transactions belong to a Plaid account that has to be mapped to one.
+  const inboxCardOf = r => String(r.accountId).startsWith("card:") ? String(r.accountId).slice(5) : mappedCard[r.accountId];
+  const inboxRows = plaid.inbox.filter(r => inboxCardOf(r));
   // Finds an expense already entered by hand that this bank transaction might
   // duplicate: same amount within 3 days, or a similar name with an amount
   // within 10% (e.g. the bank amount includes a tip).
@@ -1270,7 +1278,11 @@ function App() {
     const t = new Date(row.date).getTime();
     const rn = normName(row.name);
     let close = null;
-    for (const e of expenses) {
+    // A bank transaction can also repeat an Apple Pay payment still waiting in the list.
+    const waiting = row.applepay ? [] : inboxRows
+      .filter(o => o.applepay && o.txId !== row.txId && inboxCardOf(o) === inboxCardOf(row))
+      .map(o => ({ desc: `${o.name} (Apple Pay, por revisar)`, amount: o.amount, date: o.date, account: inboxCardOf(o) }));
+    for (const e of [...expenses, ...waiting]) {
       if (Math.abs(new Date(e.date).getTime() - t) > 3*86400000) continue;
       if (Math.abs(e.amount - row.amount) < 0.005) return { expense: e, kind: "same" };
       const en = normName(e.desc);
@@ -2183,9 +2195,10 @@ function App() {
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
                     <div style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
-                      <span>{r.date} · {cardName(mappedCard[r.accountId])}</span>
+                      <span>{r.date} · {cardName(inboxCardOf(r))}</span>
                       {r.pending && r.status !== "ajuste" && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>En proceso</span>}
                       {r.transfer && <span className="badge badge-gray" style={{fontSize:8,padding:"1px 6px"}}>Transferencia</span>}
+                      {r.applepay && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>Apple Pay</span>}
                     </div>
                   </div>
                   <div style={{fontSize:14,fontWeight:700}}>{fmt(r.amount)}</div>
