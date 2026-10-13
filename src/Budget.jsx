@@ -16,7 +16,24 @@ const GROUPS = [
   { id: "ahorro", title: "AHORRO E INVERSIÓN", icon: "🌱" },
 ];
 const STATUS_COLOR = { ok: "#16a34a", warn: "#d97706", over: "#dc2626" };
-const EMPTY_FORM = { id: null, grupo: "esencial", nombre: "", unit: "mensual", monto: "", categorias: [], nota: "" };
+const EMPTY_FORM = { id: null, grupo: "esencial", nombre: "", anual: 0, vals: { bisemanal: "", mensual: "", anual: "" }, categorias: [], nota: "" };
+const f2 = n => String(Math.round(n * 100) / 100);
+// The three amounts of a line, as strings for the inputs, from its annual value.
+const valsFromAnual = anual => Object.fromEntries(KINDS.map(k => [k, f2(lineAmount(anual, k))]));
+
+const amountsOf = anual => Object.fromEntries(KINDS.map(k => [k, lineAmount(anual, k)]));
+
+// Three columns (bisemanal / mensual / anual): the column headings (head) or one set of amounts.
+function Cells({ fmt, head, vals, strong, dim, tone }) {
+  const cell = { flex: 1, minWidth: 0, textAlign: "right" };
+  return (
+    <div style={{ display: "flex", gap: 6 }}>
+      {KINDS.map(k => head
+        ? <div key={k} style={{ ...cell, fontSize: 10, letterSpacing: .5, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" }}>{KIND_LABEL[k]}</div>
+        : <div key={k} style={{ ...cell, fontSize: strong ? 14 : 13, fontWeight: strong ? 700 : 600, color: tone || (dim ? "#cbd5e1" : "#0f172a"), fontVariantNumeric: "tabular-nums" }}>{fmt(Math.abs(vals[k]))}</div>)}
+    </div>
+  );
+}
 
 const readKind = () => { try { const k = localStorage.getItem("bolsillo_budget_kind"); return KINDS.includes(k) ? k : "mensual"; } catch { return "mensual"; } };
 const saveKind = k => { try { localStorage.setItem("bolsillo_budget_kind", k); } catch { /* storage unavailable */ } };
@@ -61,10 +78,18 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
     const budget = lineAmount(l.anual, kind);
     const measured = l.categorias.length > 0;
     const spent = measured && period ? spentFor(l.categorias, expenses, period, owedFor) : 0;
-    return { ...l, budget, measured, spent, status: measured ? budgetStatus(spent, budget) : null };
+    return { ...l, budget, amounts: amountsOf(l.anual), measured, spent, status: measured ? budgetStatus(spent, budget) : null };
   }), [lines, kind, period?.start, period?.end, expenses]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const totals = planTotals(lines, kind, config.sueldoNetoAnual);
+  // Totals for the three views at once; `totals.x` is { bisemanal, mensual, anual }.
+  const totals = useMemo(() => {
+    const t = Object.fromEntries(KINDS.map(k => [k, planTotals(lines, k, config.sueldoNetoAnual)]));
+    const pick = f => Object.fromEntries(KINDS.map(k => [k, f(t[k])]));
+    return {
+      sueldo: pick(x => x.sueldo), plan: pick(x => x.plan), sinAsignar: pick(x => x.sinAsignar),
+      groups: Object.fromEntries(GROUPS.map(g => [g.id, pick(x => x.groups[g.id])])),
+    };
+  }, [lines, config.sueldoNetoAnual]);
   const measuredRows = rows.filter(r => r.measured);
   const measuredBudget = measuredRows.reduce((s, r) => s + r.budget, 0);
   const measuredSpent = measuredRows.reduce((s, r) => s + r.spent, 0);
@@ -72,15 +97,17 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
   function changeKind(k) { setKind(k); saveKind(k); }
   function step(dir) { if (period) setRef(shiftPeriod(period, dir, anchor).start); }
 
-  function openAdd(grupo) { setConfirmDel(false); setForm({ ...EMPTY_FORM, grupo, unit: kind }); }
+  function openAdd(grupo) { setConfirmDel(false); setForm({ ...EMPTY_FORM, grupo }); }
   function openEdit(r) {
     setConfirmDel(false);
-    setForm({ id: r.id, grupo: r.grupo, nombre: r.nombre, unit: kind, monto: String(lineAmount(r.anual, kind)), categorias: r.categorias, nota: r.nota || "" });
+    setForm({ id: r.id, grupo: r.grupo, nombre: r.nombre, anual: r.anual, vals: valsFromAnual(r.anual), categorias: r.categorias, nota: r.nota || "" });
   }
-  function setUnit(unit) {
+  // Typing in any of the three boxes recomputes the other two (annual is the pivot).
+  function setAmount(kind_, v) {
     setForm(f => {
-      const anual = annualFromPeriod(f.monto, f.unit);
-      return { ...f, unit, monto: f.monto === "" ? "" : String(lineAmount(anual, unit)) };
+      if (v === "") return { ...f, anual: 0, vals: { bisemanal: "", mensual: "", anual: "", [kind_]: "" } };
+      const anual = annualFromPeriod(v, kind_);
+      return { ...f, anual, vals: { ...valsFromAnual(anual), [kind_]: v } };
     });
   }
   const conflicts = form ? categoryConflicts(lines, form.categorias, form.id) : [];
@@ -89,7 +116,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
   async function saveLine(e) {
     e.preventDefault();
     if (!form || saving || conflicts.length) return;
-    const payload = { grupo: form.grupo, nombre: form.nombre.trim(), anual: annualFromPeriod(form.monto || 0, form.unit), categorias: form.categorias, nota: form.nota.trim() };
+    const payload = { grupo: form.grupo, nombre: form.nombre.trim(), anual: form.anual || 0, categorias: form.categorias, nota: form.nota.trim() };
     if (!payload.nombre) return;
     setSaving(true);
     try {
@@ -159,36 +186,11 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
     </div>
   );
 
-  const over = totals.sinAsignar < -0.005;
+  const over = totals.sinAsignar.anual < -0.005;
 
   return (
     <div>
       <style>{css}</style>
-
-      <div className="ptt">
-        {KINDS.map(k => (
-          <button key={k} className={`pto ${kind === k ? "on" : ""}`} onClick={() => changeKind(k)}>{KIND_LABEL[k]}</button>
-        ))}
-      </div>
-
-      {period ? (
-        <div className="bd-nav">
-          <button className="bd-arrow" aria-label="Período anterior" onClick={() => step(-1)}>‹</button>
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, fontWeight: 700 }}>{period.label}</div>
-            {!isCurrent
-              ? <button onClick={() => setRef(todayStr)} style={{ border: "none", background: "none", color: "#0f4c81", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Ir a hoy</button>
-              : <div style={{ fontSize: 11, color: "#94a3b8" }}>Período actual</div>}
-          </div>
-          <button className="bd-arrow" aria-label="Período siguiente" onClick={() => step(1)}>›</button>
-        </div>
-      ) : (
-        <div className="bd-card" style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Falta la fecha de un día de pago</div>
-          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 10 }}>Las quincenas se cuentan de 14 en 14 desde un día de pago real.</div>
-          <button className="btn btn-p" onClick={openSettings}>Poner fecha de pago</button>
-        </div>
-      )}
 
       {lines.length === 0 ? (
         <div className="bd-card" style={{ textAlign: "center" }}>
@@ -198,24 +200,56 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
       ) : (
         <>
           <div className="bd-card">
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#64748b" }}>
-              <span>Sueldo neto {KIND_ADJ[kind]}</span><b style={{ color: "#0f172a" }}>{fmt(totals.sueldo)}</b>
+            <Cells fmt={fmt} head />
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 2 }}>Sueldo neto</div>
+              <Cells fmt={fmt} vals={totals.sueldo} />
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#64748b", marginTop: 6 }}>
-              <span>Planificado</span><b style={{ color: "#0f172a" }}>{fmt(totals.plan)}</b>
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 2 }}>Planificado</div>
+              <Cells fmt={fmt} vals={totals.plan} />
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginTop: 6, color: over ? "#dc2626" : "#64748b" }}>
-              <span>{over ? "Te pasas del sueldo" : "Sin asignar"}</span><b>{fmt(Math.abs(totals.sinAsignar))}</b>
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 11, color: over ? "#dc2626" : "#94a3b8", marginBottom: 2 }}>{over ? "Te pasas del sueldo" : "Sin asignar"}</div>
+              <Cells fmt={fmt} vals={totals.sinAsignar} tone={over ? "#dc2626" : "#64748b"} />
             </div>
-            {measuredRows.length > 0 && (
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #f1f5f9" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#64748b" }}>
-                  <span>Gasto medido en Bolsillo</span>
-                  <b style={{ color: STATUS_COLOR[budgetStatus(measuredSpent, measuredBudget)] }}>{fmt(measuredSpent)} <span style={{ color: "#94a3b8", fontWeight: 500 }}>de {fmt(measuredBudget)}</span></b>
-                </div>
-                <div className="bd-bar"><div style={{ width: `${Math.min(100, measuredBudget > 0 ? (measuredSpent / measuredBudget) * 100 : 0)}%`, background: STATUS_COLOR[budgetStatus(measuredSpent, measuredBudget)] }} /></div>
+
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #f1f5f9" }}>
+              <div style={{ fontSize: 11, letterSpacing: 1, fontWeight: 700, color: "#94a3b8", marginBottom: 8 }}>GASTO REAL EN BOLSILLO</div>
+              <div className="ptt">
+                {KINDS.map(k => (
+                  <button key={k} className={`pto ${kind === k ? "on" : ""}`} onClick={() => changeKind(k)}>{KIND_LABEL[k]}</button>
+                ))}
               </div>
-            )}
+              {period ? (
+                <>
+                  <div className="bd-nav" style={{ margin: "10px 0 6px" }}>
+                    <button className="bd-arrow" aria-label="Período anterior" onClick={() => step(-1)}>‹</button>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 700 }}>{period.label}</div>
+                      {!isCurrent
+                        ? <button onClick={() => setRef(todayStr)} style={{ border: "none", background: "none", color: "#0f4c81", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Ir a hoy</button>
+                        : <div style={{ fontSize: 11, color: "#94a3b8" }}>Período actual</div>}
+                    </div>
+                    <button className="bd-arrow" aria-label="Período siguiente" onClick={() => step(1)}>›</button>
+                  </div>
+                  {measuredRows.length > 0 && (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#64748b" }}>
+                        <span>Líneas medidas</span>
+                        <b style={{ color: STATUS_COLOR[budgetStatus(measuredSpent, measuredBudget)] }}>{fmt(measuredSpent)} <span style={{ color: "#94a3b8", fontWeight: 500 }}>de {fmt(measuredBudget)}</span></b>
+                      </div>
+                      <div className="bd-bar"><div style={{ width: `${Math.min(100, measuredBudget > 0 ? (measuredSpent / measuredBudget) * 100 : 0)}%`, background: STATUS_COLOR[budgetStatus(measuredSpent, measuredBudget)] }} /></div>
+                    </>
+                  )}
+                </>
+              ) : (
+                <div style={{ marginTop: 10, fontSize: 12, color: "#64748b" }}>
+                  Para ver el gasto por quincena falta la fecha de un día de pago real (las quincenas se cuentan de 14 en 14).
+                  <div style={{ marginTop: 8 }}><button className="btn btn-p" onClick={openSettings}>Poner fecha de pago</button></div>
+                </div>
+              )}
+            </div>
             <button onClick={openSettings} style={{ marginTop: 12, border: "none", background: "none", color: "#0f4c81", fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0, fontFamily: "inherit" }}>⚙️ Sueldo y fecha de pago</button>
           </div>
 
@@ -223,21 +257,19 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
             const groupRows = rows.filter(r => r.grupo === g.id);
             return (
               <div key={g.id} className="bd-card">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
-                  <div style={{ fontSize: 11, letterSpacing: 1.5, fontWeight: 700, color: "#94a3b8" }}>{g.icon} {g.title}</div>
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>{fmt(totals.groups[g.id])}</div>
-                </div>
+                <div style={{ fontSize: 11, letterSpacing: 1.5, fontWeight: 700, color: "#94a3b8", marginBottom: 4 }}>{g.icon} {g.title}</div>
+                <Cells fmt={fmt} head />
+                <Cells fmt={fmt} vals={totals.groups[g.id]} strong />
+                <div style={{ height: 6 }} />
                 {groupRows.map(r => (
                   <button key={r.id} className="bd-row" onClick={() => openEdit(r)}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-                      <span style={{ fontSize: 14, fontWeight: 600, color: "#0f172a" }}>{r.nombre}</span>
-                      <span style={{ fontSize: 14, fontWeight: 600, color: r.budget > 0 ? "#0f172a" : "#cbd5e1" }}>{fmt(r.budget)}</span>
-                    </div>
-                    {r.measured && (
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#0f172a", marginBottom: 2 }}>{r.nombre}</div>
+                    <Cells fmt={fmt} vals={r.amounts} dim={r.anual <= 0} />
+                    {r.measured && period && (
                       <>
                         <div className="bd-bar"><div style={{ width: `${Math.min(100, r.budget > 0 ? (r.spent / r.budget) * 100 : (r.spent > 0 ? 100 : 0))}%`, background: STATUS_COLOR[r.status] }} /></div>
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginTop: 4, color: "#94a3b8" }}>
-                          <span>Gastado {fmt(r.spent)}</span>
+                          <span>Gastado {fmt(r.spent)} ({KIND_ADJ[kind]})</span>
                           <span style={{ color: r.status === "over" ? "#dc2626" : "#94a3b8", fontWeight: r.status === "over" ? 700 : 400 }}>
                             {r.budget - r.spent >= 0 ? `Quedan ${fmt(r.budget - r.spent)}` : `Te pasaste ${fmt(r.spent - r.budget)}`}
                           </span>
@@ -270,15 +302,15 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
             </div>
 
             <div className="field"><label>Monto</label>
-              <div className="ptt" style={{ marginBottom: 8 }}>
-                {KINDS.map(k => <button key={k} type="button" className={`pto ${form.unit === k ? "on" : ""}`} onClick={() => setUnit(k)}>{KIND_LABEL[k]}</button>)}
+              <div style={{ display: "flex", gap: 8 }}>
+                {KINDS.map(k => (
+                  <div key={k} style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700, marginBottom: 4 }}>{KIND_LABEL[k]}</div>
+                    <input className="inp" style={{ padding: "10px 8px" }} type="number" min="0" step="0.01" inputMode="decimal" value={form.vals[k]} onChange={e => setAmount(k, e.target.value)} placeholder="0.00" required={k === "mensual"} />
+                  </div>
+                ))}
               </div>
-              <input className="inp" type="number" min="0" step="0.01" inputMode="decimal" value={form.monto} onChange={e => setForm(f => ({ ...f, monto: e.target.value }))} placeholder="0.00" required />
-              {form.monto !== "" && (
-                <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
-                  {KINDS.map(k => `${KIND_LABEL[k]} ${fmt(lineAmount(annualFromPeriod(form.monto, form.unit), k))}`).join(" · ")}
-                </div>
-              )}
+              <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 6 }}>Cambia cualquiera de los tres y los otros se ajustan solos (anual ÷ 12 = mensual, anual ÷ 26 = bisemanal).</div>
             </div>
 
             <div className="field"><label>Medir con gastos de Bolsillo (opcional)</label>
