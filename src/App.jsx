@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import Budget from "./Budget.jsx";
 
 const SCRIPT_URL = "/api/sheet";
 const CLOSE_DAY = 20;
@@ -2467,6 +2468,20 @@ function App() {
           </div>
         )}
 
+        {tab==="budget" && (
+          <Budget
+            expenses={expenses}
+            fetcher={fetchWithTimeout}
+            showToast={showToast}
+            owedFor={owedForExp}
+            categories={CATEGORIES}
+            catEmoji={CAT_EMOJI}
+            fmt={fmt}
+            todayStr={today()}
+            scriptUrl={SCRIPT_URL}
+          />
+        )}
+
         {tab==="summary" && (
           <div>
             {months.length===0 && <div className="empty-state">Sin gastos para resumir.</div>}
@@ -2602,6 +2617,9 @@ function App() {
         </button>
         <button className={`tab ${tab==="recurring"?"on":""}`} onClick={()=>setTab("recurring")}>
           <span className="ticon">📅</span><span>Fijos</span>
+        </button>
+        <button className={`tab ${tab==="budget"?"on":""}`} onClick={()=>setTab("budget")}>
+          <span className="ticon">💰</span><span>Presupuesto</span>
         </button>
         <button className={`tab ${tab==="summary"?"on":""}`} onClick={()=>setTab("summary")}>
           <span className="ticon">📊</span><span>Resumen</span>

@@ -2,6 +2,7 @@ import { sheetsFetch, getSheetGid, rowFromUpdatedRange } from "../lib/sheetsClie
 import { requireAuth } from "../lib/session.js";
 import { listCards, addCard, editCard, deleteCard, getCard } from "../lib/cardsStore.js";
 import { listRules, addRule, editRule, deleteRule } from "../lib/rewardsStore.js";
+import { listLines, addLine, editLine, deleteLine, getConfig, setConfig } from "../lib/budgetStore.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -231,6 +232,12 @@ export default async function handler(req, res) {
     else if (action === "rules-add") result = await addRule(body);
     else if (action === "rules-edit") { await editRule(body.id, body); result = { ok:true }; }
     else if (action === "rules-delete") { await deleteRule(body.id); result = { ok:true }; }
+
+    else if (action === "budget-list") result = { lines: await listLines(), config: await getConfig() };
+    else if (action === "budget-add") result = await addLine(body);
+    else if (action === "budget-edit") { await editLine(body.id, body); result = { ok:true }; }
+    else if (action === "budget-delete") { await deleteLine(body.id); result = { ok:true }; }
+    else if (action === "budget-config") { await setConfig(body); result = { ok:true, config: await getConfig() }; }
 
     res.status(200).json(result);
   } catch (err) {
