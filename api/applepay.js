@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "crypto";
 import { listCards } from "../lib/cardsStore.js";
-import { addApplePayRow } from "../lib/plaidStore.js";
+import { addApplePayRow, logApplePay } from "../lib/plaidStore.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -50,23 +50,37 @@ export default async function handler(req, res) {
   const expected = process.env.APPLE_PAY_KEY;
   if (!expected) return res.status(503).json({ error: "applepay_not_configured" });
 
+  let body = {};
+  const seen = () => ({
+    merchant: String(body.merchant ?? body.Merchant ?? "").slice(0, 120),
+    amount: String(body.amount ?? body.Amount ?? "").slice(0, 40),
+    account: String(body.account ?? "").slice(0, 60),
+    card: String(body.card ?? body.Card ?? "").slice(0, 60),
+    key: req.headers["x-bolsillo-key"] || body.key ? "present" : "absent",
+  });
+  // Answer first-class, but always leave a trace of what arrived (best effort).
+  const reply = async (status, outcome, payload) => {
+    try { await logApplePay({ outcome, ...seen() }); } catch (e) { console.warn("applepay log failed", e.message); }
+    return res.status(status).json(payload);
+  };
+
   try {
-    const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+    body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
     const key = req.headers["x-bolsillo-key"] || body.key;
-    if (!safeEqual(key, expected)) return res.status(401).json({ error: "unauthorized" });
+    if (!safeEqual(key, expected)) return reply(401, "unauthorized", { error: "unauthorized" });
 
     const name = String(body.merchant ?? body.Merchant ?? "").trim().slice(0, 120);
     const amount = parseAmount(body.amount ?? body.Amount);
-    if (!name || amount === null || amount <= 0 || amount > 100000) return res.status(400).json({ error: "invalid_payment" });
+    if (!name || amount === null || amount <= 0 || amount > 100000) return reply(400, "invalid_payment", { error: "invalid_payment" });
 
     const cards = await listCards();
     const cardId = resolveCard(cards, body.account, body.card, body.Card);
-    if (!cardId) return res.status(400).json({ error: "unknown_card", cards: cards.map(c => c.id) });
+    if (!cardId) return reply(400, "unknown_card", { error: "unknown_card", cards: cards.map(c => c.id) });
 
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || "")) ? body.date : localDate();
     const result = await addApplePayRow({ cardId, name, amount, date });
-    return res.status(200).json({ ok: true, id: result.id, duplicate: result.duplicate });
+    return reply(200, result.duplicate ? "duplicate" : "ok", { ok: true, id: result.id, duplicate: result.duplicate });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return reply(500, "error: " + String(err.message).slice(0, 80), { error: err.message });
   }
 }
