@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import Budget from "./Budget.jsx";
+import Dashboard, { BestCardWidget } from "./Dashboard.jsx";
 
 const SCRIPT_URL = "/api/sheet";
 const CLOSE_DAY = 20;
@@ -2237,38 +2238,7 @@ function App() {
             </div>
           )}
 
-          {recommendations.length > 0 && (
-            <div className="card" style={{padding:14, marginBottom:16}}>
-              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,marginBottom:10}}>💳 MEJOR TARJETA HOY</div>
-              {recommendations.map(rec => {
-                const bestCard = cards.find(c=>c.id===rec.best.cardId);
-                const pct = rec.best.tope > 0 ? Math.min(100, Math.round(rec.best.spent/rec.best.tope*100)) : null;
-                return (
-                  <div key={rec.categoria} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #f1f5f9"}}>
-                    <div style={{fontSize:18,width:22,textAlign:"center"}}>{CAT_EMOJI[rec.categoria]||"📦"}</div>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:13,fontWeight:600}}>{rec.categoria}</div>
-                      <div style={{fontSize:11,color:"#94a3b8",display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
-                        <span style={{width:8,height:8,borderRadius:"50%",background:bestCard?.color||"#0f4c81",display:"inline-block",flexShrink:0}}></span>
-                        {bestCard?.nombre || rec.best.cardId}
-                        {rec.best.requiereActivacion && <span className="badge badge-amber" style={{fontSize:8,padding:"1px 6px"}}>Activar</span>}
-                      </div>
-                      {pct !== null && (
-                        <div style={{marginTop:4,height:4,background:"#f1f5f9",borderRadius:2,overflow:"hidden",width:120}}>
-                          <div style={{width:`${pct}%`,height:"100%",background:pct>=100?"#dc2626":pct>=80?"#b45309":"#0f4c81"}}></div>
-                        </div>
-                      )}
-                      {pct !== null && <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{fmt(rec.best.spent)} de {fmt(rec.best.tope)}{rec.best.shared ? " (tope compartido)" : ""}</div>}
-                    </div>
-                    <div style={{textAlign:"right"}}>
-                      <div style={{fontSize:15,fontWeight:700,color: rec.best.overCap ? "#dc2626" : "#059669"}}>{rec.best.effectiveRate}%</div>
-                      {rec.best.overCap && <div style={{fontSize:9,color:"#dc2626"}}>tope alcanzado</div>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <BestCardWidget recommendations={recommendations} cards={cards} fmt={fmt} catEmoji={CAT_EMOJI} />
 
           {activeCard!=="debit" && (
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,margin:"16px 0"}}>
@@ -2484,6 +2454,20 @@ function App() {
 
         {tab==="summary" && (
           <div>
+            <Dashboard
+              expenses={expenses}
+              cards={cards}
+              recommendations={recommendations}
+              fmt={fmt}
+              catEmoji={CAT_EMOJI}
+              categories={CATEGORIES}
+              owedFor={owedForExp}
+              todayStr={today()}
+              fetcher={fetchWithTimeout}
+              scriptUrl={SCRIPT_URL}
+            />
+
+            <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,margin:"8px 0 10px"}}>HISTORIAL POR MES · {activeCardObj?.nombre?.toUpperCase() || "TARJETA ACTIVA"}</div>
             {months.length===0 && <div className="empty-state">Sin gastos para resumir.</div>}
 
             {chartData.length>1 && (
@@ -2622,7 +2606,7 @@ function App() {
           <span className="ticon">💰</span><span>Presupuesto</span>
         </button>
         <button className={`tab ${tab==="summary"?"on":""}`} onClick={()=>setTab("summary")}>
-          <span className="ticon">📊</span><span>Resumen</span>
+          <span className="ticon">📊</span><span>Dashboard</span>
         </button>
       </div>
 
