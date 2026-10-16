@@ -548,7 +548,8 @@ function App() {
   const [confirmRecDelete, setConfirmRecDelete] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [formAccount, setFormAccount] = useState("");
-  const [tab, setTab] = useState("list");
+  const [tab, setTab] = useState("dashboard");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [cards, setCards] = useState([]);
   const [rules, setRules] = useState([]);
   const [plaid, setPlaid] = useState(EMPTY_PLAID);
@@ -1419,6 +1420,85 @@ function App() {
     );
   }
 
+  const NAV = [
+    { id:"dashboard", icon:"🏠", label:"Dashboard" },
+    { id:"list", icon:"💳", label:"Crédito" },
+    { id:"medeben", icon:"🤝", label:"Me deben", badge: meDeben.length },
+    { id:"recurring", icon:"📅", label:"Fijos" },
+    { id:"budget", icon:"💰", label:"Presupuesto" },
+    { id:"summary", icon:"📊", label:"Resumen" },
+  ];
+  const goTo = id => { setTab(id); setMenuOpen(false); window.scrollTo(0,0); };
+  const inboxCard = (plaid.items.length > 0 || inboxRows.length > 0) && (
+            <div className="card" style={{padding:14, marginBottom:16}}>
+              <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:10}}>
+              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700}}>
+                🏦 POR REVISAR ({inboxView.length})
+                {inboxPendingCount > 0 && <span> · {inboxPendingCount} en proceso</span>}
+                {inboxAdjustCount > 0 && <span style={{color:"#dc2626"}}> · ⚠️ {inboxAdjustCount} cambio{inboxAdjustCount!==1?"s":""} de monto</span>}
+                {inboxDupCount > 0 && <span style={{color:"#b45309"}}> · ⚠️ {inboxDupCount} posible{inboxDupCount!==1?"s":""} duplicado{inboxDupCount!==1?"s":""}</span>}
+              </div>
+              {plaid.items.length > 0 && (
+                <div style={{textAlign:"right",flexShrink:0}}>
+                  <button className="btn btn-g btn-sm" disabled={plaidSyncing} onClick={syncBank}>{plaidSyncing ? "Sincronizando..." : "🔄 Sincronizar"}</button>
+                  {plaidLastSync && <div style={{fontSize:9,color:"#94a3b8",marginTop:3}}>Ultima: {plaidLastSync.toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})}</div>}
+                </div>
+              )}
+              </div>
+              {plaid.items.filter(i => i.error).map(i => (
+                <div key={i.itemId} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",marginBottom:8,background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,fontSize:11,color:"#b91c1c"}}>
+                  <span style={{flex:1}}>⚠️ <b>{i.institution || "Banco"}</b>: {bankErrorText(i.error)}</span>
+                  <button className="btn btn-d btn-sm" onClick={()=>openBankSettings(i)}>Ver</button>
+                </div>
+              ))}
+              {inboxView.length === 0 && <div style={{fontSize:12,color:"#94a3b8",padding:"6px 0"}}>Todo al dia ✓</div>}
+              {inboxView.slice(0,10).map(r => (
+                <div key={r.txId} style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,padding:"8px 0",borderBottom:"1px solid #f1f5f9"}}>
+                  <div style={{fontSize:18,width:22,textAlign:"center"}}>{CAT_EMOJI[r.category]||"📦"}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
+                    <div style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
+                      <span>{r.date} · {cardName(inboxCardOf(r))}</span>
+                      {r.pending && r.status !== "ajuste" && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>En proceso</span>}
+                      {r.transfer && <span className="badge badge-gray" style={{fontSize:8,padding:"1px 6px"}}>Transferencia</span>}
+                      {r.applepay && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>Apple Pay</span>}
+                    </div>
+                  </div>
+                  <div style={{fontSize:14,fontWeight:700}}>{fmt(r.amount)}</div>
+                  {r.status === "ajuste" ? (
+                    <>
+                      {r.match && <button className="btn btn-p btn-sm" onClick={()=>startAdjust(r, r.match)}>{r.ajuste==="monto" ? "Ajustar gasto" : "Ver gasto"}</button>}
+                      <button className="btn btn-g btn-sm" onClick={()=>resolveInbox(r.txId,"imported")}>{r.ajuste==="monto" ? "Dejarlo asi" : "Listo"}</button>
+                    </>
+                  ) : r.sim ? (
+                    <>
+                      <button className="btn btn-p btn-sm" onClick={()=>resolveInbox(r.txId,"dismissed")}>Es el mismo</button>
+                      <button className="btn btn-g btn-sm" onClick={()=>startImport(r)}>Agregar igual</button>
+                    </>
+                  ) : (
+                    <>
+                      <button className="btn btn-p btn-sm" onClick={()=>startImport(r)}>Revisar</button>
+                      <button className="btn btn-g btn-sm" onClick={()=>resolveInbox(r.txId,"dismissed")}>X</button>
+                    </>
+                  )}
+                  {r.status === "ajuste" && (
+                    <div style={{flexBasis:"100%",padding:"6px 8px",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,fontSize:11,color:"#b91c1c"}}>
+                      {r.ajuste === "monto"
+                        ? <>💱 El monto final cambio: lo agregaste como <b>{fmt(r.prevAmount)}</b> y el banco cobro <b>{fmt(r.amount)}</b>.{r.match ? ` Gasto: ${r.match.desc}.` : " No encontre el gasto que agregaste."}</>
+                        : <>⚠️ Este movimiento en proceso (<b>{fmt(r.prevAmount)}</b>) desaparecio del banco; puede haber sido una retencion cancelada.{r.match ? ` Gasto: ${r.match.desc}.` : ""}</>}
+                    </div>
+                  )}
+                  {r.sim && (
+                    <div style={{flexBasis:"100%",padding:"6px 8px",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,fontSize:11,color:"#b45309"}}>
+                      ⚠️ {r.sim.kind==="same" ? "Mismo monto que" : "Parecido a"}: <b>{r.sim.expense.desc}</b> · {fmt(r.sim.expense.amount)} · {r.sim.expense.date} · {cardName(r.sim.expense.account)}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {inboxView.length > 10 && <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>y {inboxView.length-10} mas</div>}
+            </div>
+          );
+
   return (
     <div style={{minHeight:"100vh",background:"#f1f5f9",fontFamily:"'DM Sans','Helvetica Neue',sans-serif",color:"#0f172a"}}>
       <style>{`
@@ -1568,6 +1648,15 @@ function App() {
         .chart-legend .sw{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:4px;}
 
         /* ---- bottom tab bar ---- */
+        .menu-btn{width:36px;height:36px;border-radius:10px;border:1px solid #e2e8f0;background:#fff;font-size:18px;cursor:pointer;color:#334155;font-family:inherit;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+        .fab{position:fixed;right:18px;bottom:calc(20px + env(safe-area-inset-bottom));width:56px;height:56px;border-radius:18px;border:none;cursor:pointer;background:linear-gradient(135deg,#0f4c81,#1e6ab0);color:#fff;font-size:28px;font-weight:400;line-height:1;box-shadow:0 10px 22px -6px rgba(15,76,129,.55);z-index:150;display:flex;align-items:center;justify-content:center;font-family:inherit;}
+        .fab:active{transform:scale(.95);}
+        .drawer-overlay{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:350;animation:fadeIn .18s ease;}
+        .drawer{position:absolute;left:0;top:0;bottom:0;width:min(290px,82vw);background:#fff;padding:calc(18px + env(safe-area-inset-top)) 16px 20px;box-shadow:8px 0 30px rgba(0,0,0,.18);animation:drawerIn .22s ease;overflow-y:auto;}
+        .drawer-item{display:flex;align-items:center;gap:10px;width:100%;padding:13px 12px;margin-bottom:4px;border:none;border-radius:12px;background:none;font-family:inherit;font-size:15px;font-weight:600;color:#334155;cursor:pointer;}
+        .drawer-item.on{background:#eff6ff;color:#0f4c81;}
+        @keyframes drawerIn{from{transform:translateX(-100%)}to{transform:translateX(0)}}
+        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
         .tabbar{position:fixed;left:50%;transform:translateX(-50%);bottom:0;width:100%;max-width:720px;background:#fff;border-top:1px solid #e2e8f0;display:flex;padding:8px 10px calc(8px + env(safe-area-inset-bottom));z-index:100;}
         .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:none;font-family:inherit;cursor:pointer;color:#94a3b8;padding:6px 2px;}
         .tab.on{color:#0f4c81;}
@@ -2081,12 +2170,13 @@ function App() {
       <div style={{background:"#fff",borderBottom:"1px solid #e2e8f0",padding:"0 20px"}}>
         <div style={{maxWidth:720,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between",height:58}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <button className="menu-btn" aria-label="Menú" onClick={()=>setMenuOpen(true)}>☰</button>
             <div style={{width:34,height:34,background:"linear-gradient(135deg,#0f4c81,#1e6ab0)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 2px 8px rgba(15,76,129,.3)"}}>
               <span style={{color:"#fff",fontSize:16,fontWeight:700}}>B</span>
             </div>
             <div>
               <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700,letterSpacing:-.3,lineHeight:1}}>Bolsillo</div>
-              <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,fontWeight:600}}>{cards.length} TARJETA{cards.length!==1?"S":""} · DEBITO</div>
+              <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,fontWeight:600}}>{(NAV.find(n=>n.id===tab)?.label || "").toUpperCase()}</div>
             </div>
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -2104,6 +2194,22 @@ function App() {
       </div>
 
       <div style={{maxWidth:720,margin:"0 auto",padding:"20px 16px 96px"}}>
+
+        {tab==="dashboard" && (
+          <Dashboard
+            inboxSlot={inboxCard}
+            expenses={expenses}
+            cards={cards}
+            recommendations={recommendations}
+            fmt={fmt}
+            catEmoji={CAT_EMOJI}
+            categories={CATEGORIES}
+            owedFor={owedForExp}
+            todayStr={today()}
+            fetcher={fetchWithTimeout}
+            scriptUrl={SCRIPT_URL}
+          />
+        )}
 
         {tab==="list" && <>
           <div className="card-stack">
@@ -2168,75 +2274,7 @@ function App() {
             <button className="qbtn" onClick={loadAll}><span className="qicon">🔄</span><span>Sync</span></button>
           </div>
 
-          {(plaid.items.length > 0 || inboxRows.length > 0) && (
-            <div className="card" style={{padding:14, marginBottom:16}}>
-              <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:10}}>
-              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700}}>
-                🏦 POR REVISAR ({inboxView.length})
-                {inboxPendingCount > 0 && <span> · {inboxPendingCount} en proceso</span>}
-                {inboxAdjustCount > 0 && <span style={{color:"#dc2626"}}> · ⚠️ {inboxAdjustCount} cambio{inboxAdjustCount!==1?"s":""} de monto</span>}
-                {inboxDupCount > 0 && <span style={{color:"#b45309"}}> · ⚠️ {inboxDupCount} posible{inboxDupCount!==1?"s":""} duplicado{inboxDupCount!==1?"s":""}</span>}
-              </div>
-              {plaid.items.length > 0 && (
-                <div style={{textAlign:"right",flexShrink:0}}>
-                  <button className="btn btn-g btn-sm" disabled={plaidSyncing} onClick={syncBank}>{plaidSyncing ? "Sincronizando..." : "🔄 Sincronizar"}</button>
-                  {plaidLastSync && <div style={{fontSize:9,color:"#94a3b8",marginTop:3}}>Ultima: {plaidLastSync.toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})}</div>}
-                </div>
-              )}
-              </div>
-              {plaid.items.filter(i => i.error).map(i => (
-                <div key={i.itemId} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",marginBottom:8,background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,fontSize:11,color:"#b91c1c"}}>
-                  <span style={{flex:1}}>⚠️ <b>{i.institution || "Banco"}</b>: {bankErrorText(i.error)}</span>
-                  <button className="btn btn-d btn-sm" onClick={()=>openBankSettings(i)}>Ver</button>
-                </div>
-              ))}
-              {inboxView.length === 0 && <div style={{fontSize:12,color:"#94a3b8",padding:"6px 0"}}>Todo al dia ✓</div>}
-              {inboxView.slice(0,10).map(r => (
-                <div key={r.txId} style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,padding:"8px 0",borderBottom:"1px solid #f1f5f9"}}>
-                  <div style={{fontSize:18,width:22,textAlign:"center"}}>{CAT_EMOJI[r.category]||"📦"}</div>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
-                    <div style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
-                      <span>{r.date} · {cardName(inboxCardOf(r))}</span>
-                      {r.pending && r.status !== "ajuste" && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>En proceso</span>}
-                      {r.transfer && <span className="badge badge-gray" style={{fontSize:8,padding:"1px 6px"}}>Transferencia</span>}
-                      {r.applepay && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>Apple Pay</span>}
-                    </div>
-                  </div>
-                  <div style={{fontSize:14,fontWeight:700}}>{fmt(r.amount)}</div>
-                  {r.status === "ajuste" ? (
-                    <>
-                      {r.match && <button className="btn btn-p btn-sm" onClick={()=>startAdjust(r, r.match)}>{r.ajuste==="monto" ? "Ajustar gasto" : "Ver gasto"}</button>}
-                      <button className="btn btn-g btn-sm" onClick={()=>resolveInbox(r.txId,"imported")}>{r.ajuste==="monto" ? "Dejarlo asi" : "Listo"}</button>
-                    </>
-                  ) : r.sim ? (
-                    <>
-                      <button className="btn btn-p btn-sm" onClick={()=>resolveInbox(r.txId,"dismissed")}>Es el mismo</button>
-                      <button className="btn btn-g btn-sm" onClick={()=>startImport(r)}>Agregar igual</button>
-                    </>
-                  ) : (
-                    <>
-                      <button className="btn btn-p btn-sm" onClick={()=>startImport(r)}>Revisar</button>
-                      <button className="btn btn-g btn-sm" onClick={()=>resolveInbox(r.txId,"dismissed")}>X</button>
-                    </>
-                  )}
-                  {r.status === "ajuste" && (
-                    <div style={{flexBasis:"100%",padding:"6px 8px",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,fontSize:11,color:"#b91c1c"}}>
-                      {r.ajuste === "monto"
-                        ? <>💱 El monto final cambio: lo agregaste como <b>{fmt(r.prevAmount)}</b> y el banco cobro <b>{fmt(r.amount)}</b>.{r.match ? ` Gasto: ${r.match.desc}.` : " No encontre el gasto que agregaste."}</>
-                        : <>⚠️ Este movimiento en proceso (<b>{fmt(r.prevAmount)}</b>) desaparecio del banco; puede haber sido una retencion cancelada.{r.match ? ` Gasto: ${r.match.desc}.` : ""}</>}
-                    </div>
-                  )}
-                  {r.sim && (
-                    <div style={{flexBasis:"100%",padding:"6px 8px",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,fontSize:11,color:"#b45309"}}>
-                      ⚠️ {r.sim.kind==="same" ? "Mismo monto que" : "Parecido a"}: <b>{r.sim.expense.desc}</b> · {fmt(r.sim.expense.amount)} · {r.sim.expense.date} · {cardName(r.sim.expense.account)}
-                    </div>
-                  )}
-                </div>
-              ))}
-              {inboxView.length > 10 && <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>y {inboxView.length-10} mas</div>}
-            </div>
-          )}
+          {inboxCard}
 
           <BestCardWidget recommendations={recommendations} cards={cards} fmt={fmt} catEmoji={CAT_EMOJI} />
 
@@ -2454,20 +2492,6 @@ function App() {
 
         {tab==="summary" && (
           <div>
-            <Dashboard
-              expenses={expenses}
-              cards={cards}
-              recommendations={recommendations}
-              fmt={fmt}
-              catEmoji={CAT_EMOJI}
-              categories={CATEGORIES}
-              owedFor={owedForExp}
-              todayStr={today()}
-              fetcher={fetchWithTimeout}
-              scriptUrl={SCRIPT_URL}
-            />
-
-            <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,margin:"8px 0 10px"}}>HISTORIAL POR MES · {activeCardObj?.nombre?.toUpperCase() || "TARJETA ACTIVA"}</div>
             {months.length===0 && <div className="empty-state">Sin gastos para resumir.</div>}
 
             {chartData.length>1 && (
@@ -2589,26 +2613,32 @@ function App() {
         )}
       </div>
 
-      <div className="tabbar">
-        <button className={`tab ${tab==="list"?"on":""}`} onClick={()=>setTab("list")}>
-          <span className="ticon">🏠</span><span>Inicio</span>
-        </button>
-        <button className={`tab ${tab==="medeben"?"on":""}`} onClick={()=>setTab("medeben")}>
-          <span className="ticon">🤝</span><span>{meDeben.length>0?`Me deben (${meDeben.length})`:"Me deben"}</span>
-        </button>
-        <button className="qbtn" style={{width:"auto",flex:1}} onClick={()=>startAdd(activeCard)}>
-          <span className="fab-tab">+</span>
-        </button>
-        <button className={`tab ${tab==="recurring"?"on":""}`} onClick={()=>setTab("recurring")}>
-          <span className="ticon">📅</span><span>Fijos</span>
-        </button>
-        <button className={`tab ${tab==="budget"?"on":""}`} onClick={()=>setTab("budget")}>
-          <span className="ticon">💰</span><span>Presupuesto</span>
-        </button>
-        <button className={`tab ${tab==="summary"?"on":""}`} onClick={()=>setTab("summary")}>
-          <span className="ticon">📊</span><span>Dashboard</span>
-        </button>
-      </div>
+      {menuOpen && (
+        <div className="drawer-overlay" onClick={()=>setMenuOpen(false)}>
+          <nav className="drawer" onClick={e=>e.stopPropagation()}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:20,fontWeight:700}}>Bolsillo</div>
+              <button className="btn btn-g btn-sm" aria-label="Cerrar menú" onClick={()=>setMenuOpen(false)}>✕</button>
+            </div>
+            {NAV.map(n => (
+              <button key={n.id} className={`drawer-item ${tab===n.id?"on":""}`} onClick={()=>goTo(n.id)}>
+                <span style={{fontSize:20,width:26,textAlign:"center"}}>{n.icon}</span>
+                <span style={{flex:1,textAlign:"left"}}>{n.label}</span>
+                {n.badge > 0 && <span className="badge badge-amber" style={{fontSize:10}}>{n.badge}</span>}
+              </button>
+            ))}
+            <div style={{borderTop:"1px solid #e2e8f0",margin:"14px 0 8px"}}></div>
+            <button className="drawer-item" onClick={()=>{setMenuOpen(false); setShowCardsModal(true);}}>
+              <span style={{fontSize:20,width:26,textAlign:"center"}}>⚙️</span><span style={{flex:1,textAlign:"left"}}>Tarjetas y bancos</span>
+            </button>
+            <button className="drawer-item" onClick={()=>{setMenuOpen(false); logout();}}>
+              <span style={{fontSize:20,width:26,textAlign:"center"}}>🚪</span><span style={{flex:1,textAlign:"left"}}>Salir</span>
+            </button>
+          </nav>
+        </div>
+      )}
+
+      <button className="fab" aria-label="Agregar gasto" onClick={()=>startAdd(activeCard)}>+</button>
 
       {toast && <div className={`toast ${toast.type==="warn"?"twarn":"tok"}`}>{toast.msg}</div>}
     </div>

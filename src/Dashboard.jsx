@@ -120,7 +120,7 @@ export function BestCardWidget({ recommendations, cards, fmt, catEmoji }) {
   );
 }
 
-export default function Dashboard({ expenses, cards, recommendations, fmt, catEmoji, categories, owedFor, todayStr, fetcher, scriptUrl }) {
+export default function Dashboard({ inboxSlot, expenses, cards, recommendations, fmt, catEmoji, categories, owedFor, todayStr, fetcher, scriptUrl }) {
   const [budget, setBudget] = useState(null); // { lines } | "none"
 
   useEffect(() => {
@@ -201,23 +201,13 @@ export default function Dashboard({ expenses, cards, recommendations, fmt, catEm
         </div>
       </div>
 
-      <div className="card" style={{ padding: 14, marginBottom: 16 }}>
-        <div style={secTitle}>🥧 PROPORCIÓN DE GASTOS (PRESUPUESTO)</div>
-        {budget === null && <div style={{ fontSize: 12, color: "#94a3b8" }}>Cargando…</div>}
-        {budget === "none" && <div style={{ fontSize: 12, color: "#94a3b8" }}>No se pudo cargar el presupuesto.</div>}
-        {budget && budget !== "none" && (groupSlices.length === 0
-          ? <div style={{ fontSize: 12, color: "#94a3b8" }}>Todavía no hay líneas en el presupuesto.</div>
-          : (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-              <Donut slices={groupSlices} center={{ top: "AL MES", main: fmt(lineAmount(planAnual, "mensual")) }} />
-              <Legend slices={groupSlices.map(s => ({ ...s, value: lineAmount(s.value, "mensual") }))} fmt={fmt} />
-            </div>
-          ))}
-        {budget && budget !== "none" && groupSlices.length > 0 && <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 6 }}>Montos mensuales planificados.</div>}
-      </div>
+      <BestCardWidget recommendations={recommendations} cards={cards} fmt={fmt} catEmoji={catEmoji} />
+
+      {inboxSlot}
 
       <div className="card" style={{ padding: 14, marginBottom: 16 }}>
-        <div style={secTitle}>🗓️ GASTADO EN {monthName(thisKey).toUpperCase()} (HASTA HOY)</div>
+        <div style={secTitle}>📆 MES ACTUAL · {monthName(thisKey).toUpperCase()}</div>
+        <div style={{ fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 8 }}>Gastado hasta hoy, por categoría</div>
         {curSlices.length === 0
           ? <div style={{ fontSize: 12, color: "#94a3b8" }}>Todavía no hay gastos este mes.</div>
           : (
@@ -227,9 +217,22 @@ export default function Dashboard({ expenses, cards, recommendations, fmt, catEm
             </div>
           )}
         {cur.count > 0 && <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 6 }}>{cur.count} gastos · todas las tarjetas y débito (sin restar lo que te deben).</div>}
-      </div>
 
-      <BestCardWidget recommendations={recommendations} cards={cards} fmt={fmt} catEmoji={catEmoji} />
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #f1f5f9" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 8 }}>Proporción de gastos del presupuesto</div>
+          {budget === null && <div style={{ fontSize: 12, color: "#94a3b8" }}>Cargando…</div>}
+          {budget === "none" && <div style={{ fontSize: 12, color: "#94a3b8" }}>No se pudo cargar el presupuesto.</div>}
+          {budget && budget !== "none" && (groupSlices.length === 0
+            ? <div style={{ fontSize: 12, color: "#94a3b8" }}>Todavía no hay líneas en el presupuesto.</div>
+            : (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                <Donut slices={groupSlices} center={{ top: "AL MES", main: fmt(lineAmount(planAnual, "mensual")) }} />
+                <Legend slices={groupSlices.map(s => ({ ...s, value: lineAmount(s.value, "mensual") }))} fmt={fmt} />
+                <div style={{ fontSize: 10, color: "#94a3b8", alignSelf: "flex-start" }}>Montos mensuales planificados.</div>
+              </div>
+            ))}
+        </div>
+      </div>
 
       <div className="card" style={{ padding: 14 }}>
         <div style={secTitle}>📅 MES PASADO · {monthName(lastKey).toUpperCase()}</div>
