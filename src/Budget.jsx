@@ -31,6 +31,39 @@ function Nums({ vals, fmt, dim, tone }) {
   return KINDS.map(k => <td key={k} className="n" style={{ color: tone || (dim ? "#cbd5e1" : undefined) }}>{fmt(Math.abs(vals[k]))}</td>);
 }
 
+// ---- search ----
+const norm = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+// Words that point at the same kind of expense, so a search also surfaces related lines.
+const RELATED = [
+  ["comida", "restaurante", "groceries", "super", "supermercado", "almuerzo", "cena", "afuera"],
+  ["gas", "gasolina", "combustible", "guagua", "carro", "auto", "peaje", "marbete", "maintenance", "aceite", "malpractice"],
+  ["ahorro", "ahorros", "hysa", "oficina", "vacaciones", "inversiones", "inversion", "invertir"],
+  ["seguro", "medico", "salud", "malpractice", "plan"],
+  ["suscripcion", "suscripciones", "netflix", "spotify", "hbo", "costco", "servicio", "carretera", "streaming"],
+  ["casa", "renta", "phone", "telefono", "luz", "agua", "internet"],
+  ["gym", "grooming", "personal", "cuidado", "ocio", "entertainment", "free", "spending", "entretenimiento"],
+  ["impuestos", "taxes", "fica", "prestamo"],
+];
+const GROUP_WORDS = { esencial: "esencial esenciales", no_esencial: "no esencial esenciales", ahorro: "ahorro inversion inversiones" };
+
+function searchLines(lines, query) {
+  const tokens = norm(query).split(/\s+/).filter(Boolean);
+  if (!tokens.length) return { direct: [], related: [] };
+  const hay = l => norm([l.nombre, l.nota, (l.categorias || []).join(" "), GROUP_WORDS[l.grupo],
+    [bi(l.anual), me(l.anual), l.anual].join(" ")].join(" "));
+  const direct = lines.filter(l => { const h = hay(l); return tokens.every(t => h.includes(t)); });
+  const directIds = new Set(direct.map(l => l.id));
+  const hit = RELATED.filter(g => tokens.some(t => g.some(w => w.startsWith(t) || (t.length >= 3 && t.startsWith(w)))));
+  const related = lines.filter(l => {
+    if (directIds.has(l.id)) return false;
+    const h = norm(l.nombre);
+    return hit.some(g => g.some(w => h.includes(w)));
+  });
+  return { direct, related };
+}
+const bi = a => lineAmount(a, "bisemanal").toFixed(2);
+const me = a => lineAmount(a, "mensual").toFixed(2);
+
 const readKind = () => { try { const k = localStorage.getItem("bolsillo_budget_kind"); return KINDS.includes(k) ? k : "mensual"; } catch { return "mensual"; } };
 const saveKind = k => { try { localStorage.setItem("bolsillo_budget_kind", k); } catch { /* storage unavailable */ } };
 
@@ -44,6 +77,8 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
   const [showSettings, setShowSettings] = useState(false);
   const [cfgForm, setCfgForm] = useState({ sueldoNetoAnual: "", anclaPago: "" });
   const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState("");
+  const [searchFocus, setSearchFocus] = useState(false);
 
   async function post(action, payload) {
     const res = await fetcher(scriptUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, ...payload }) });
@@ -87,6 +122,10 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
     };
   }, [lines, config.sueldoNetoAnual]);
   const measuredRows = rows.filter(r => r.measured);
+  const searching = q.trim().length > 0;
+  const found = useMemo(() => searchLines(lines, q), [lines, q]);
+  const shownIds = new Set([...found.direct, ...found.related].map(l => l.id));
+  const suggestions = [...found.direct.slice(0, 5).map(l => ({ l, rel: false })), ...found.related.slice(0, 3).map(l => ({ l, rel: true }))];
   const measuredBudget = measuredRows.reduce((s, r) => s + r.budget, 0);
   const measuredSpent = measuredRows.reduce((s, r) => s + r.spent, 0);
 
@@ -200,6 +239,45 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
     <div>
       <style>{css}</style>
 
+      {lines.length > 0 && (
+        <div style={{ position: "relative", marginBottom: 12 }}>
+          <div style={{ position: "relative" }}>
+            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: "#94a3b8", pointerEvents: "none" }}>🔍</span>
+            <input className="inp" style={{ paddingLeft: 36, paddingRight: 36 }} type="text" inputMode="search" enterKeyHint="search" autoComplete="off" autoCorrect="off" autoCapitalize="off"
+              placeholder="Buscar en el presupuesto (renta, gas, 900…)" value={q} aria-label="Buscar en el presupuesto"
+              onChange={e => setQ(e.target.value)} onFocus={() => setSearchFocus(true)} onBlur={() => setTimeout(() => setSearchFocus(false), 150)}
+              onKeyDown={e => { if (e.key === "Enter" && suggestions[0]) { e.preventDefault(); openEdit(rows.find(r => r.id === suggestions[0].l.id)); setSearchFocus(false); } if (e.key === "Escape") setQ(""); }} />
+            {searching && (
+              <button aria-label="Borrar búsqueda" onMouseDown={e => e.preventDefault()} onClick={() => setQ("")}
+                style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", width: 30, height: 30, border: "none", background: "none", fontSize: 16, color: "#94a3b8", cursor: "pointer" }}>✕</button>
+            )}
+          </div>
+          {searching && searchFocus && (
+            <div className="suggest" style={{ maxHeight: 340, overflowY: "auto" }}>
+              {suggestions.length === 0 && <div style={{ padding: "12px 14px", fontSize: 13, color: "#94a3b8" }}>Sin resultados para “{q.trim()}”</div>}
+              {suggestions.map(({ l, rel }, i) => {
+                const g = GROUPS.find(x => x.id === l.grupo);
+                const prev = suggestions[i - 1];
+                return (
+                  <div key={l.id}>
+                    {rel && (!prev || !prev.rel) && <div style={{ padding: "6px 14px", fontSize: 10, letterSpacing: 1, fontWeight: 700, color: "#94a3b8", background: "#f8fafc" }}>RELACIONADO</div>}
+                    <div className="suggest-item" onMouseDown={e => e.preventDefault()}
+                      onClick={() => { openEdit(rows.find(r => r.id === l.id)); setSearchFocus(false); }}
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ fontWeight: 600 }}>{l.nombre}</span>
+                        <span style={{ display: "block", fontSize: 11, color: "#94a3b8" }}>{g?.title} · {fmt(lineAmount(l.anual, "mensual"))}/mes</span>
+                      </span>
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: g?.bg, color: g?.fg }}>{g?.title}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {lines.length === 0 ? (
         <div className="bd-card" style={{ textAlign: "center" }}>
           <div style={{ fontSize: 13, color: "#64748b", marginBottom: 12 }}>Todavía no hay líneas de presupuesto.</div>
@@ -245,7 +323,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
             <button onClick={openSettings} style={{ marginTop: 12, border: "none", background: "none", color: "#0f4c81", fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0, fontFamily: "inherit" }}>⚙️ Sueldo y fecha de pago</button>
           </div>
 
-          <table className="bd-t">
+          {!searching && <table className="bd-t">
             <thead>
               <tr><th className="g" colSpan={4} style={{ background: "#f8fafc", color: "#0f172a" }}>Resumen del sueldo</th></tr>
               <ColHead />
@@ -255,10 +333,17 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
               <tr><td>Planificado</td><Nums vals={totals.plan} fmt={fmt} /></tr>
               <tr className="tot"><td style={over ? { color: "#dc2626" } : undefined}>{over ? "Te pasas del sueldo" : "Sin asignar"}</td><Nums vals={totals.sinAsignar} fmt={fmt} tone={over ? "#dc2626" : null} /></tr>
             </tbody>
-          </table>
+          </table>}
+
+          {searching && (
+            <div style={{ fontSize: 12, color: "#64748b", margin: "0 2px 10px" }}>
+              {shownIds.size === 0 ? `Sin resultados para “${q.trim()}”` : `${found.direct.length} resultado${found.direct.length !== 1 ? "s" : ""}${found.related.length ? ` · ${found.related.length} relacionado${found.related.length !== 1 ? "s" : ""}` : ""}`}
+            </div>
+          )}
 
           {GROUPS.map(g => {
-            const groupRows = rows.filter(r => r.grupo === g.id);
+            const groupRows = rows.filter(r => r.grupo === g.id && (!searching || shownIds.has(r.id)));
+            if (searching && groupRows.length === 0) return null;
             return (
               <div key={g.id} style={{ marginBottom: 14 }}>
                 <table className="bd-t" style={{ marginBottom: 6 }}>
@@ -270,7 +355,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
                     {groupRows.map(r => (
                       <tr key={r.id} className="bd-tr" onClick={() => openEdit(r)}>
                         <td>
-                          {r.nombre}
+                          {r.nombre}{searching && !found.direct.some(d => d.id === r.id) && <span className="sub" style={{ color: "#0f4c81" }}>Relacionado</span>}
                           {r.measured && period && (
                             <>
                               <span className="sub">Gastado {fmt(r.spent)}</span>
@@ -285,7 +370,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
                         <Nums vals={r.amounts} fmt={fmt} dim={r.anual <= 0} />
                       </tr>
                     ))}
-                    <tr className="tot"><td>Total</td><Nums vals={totals.groups[g.id]} fmt={fmt} /></tr>
+                    {!searching && <tr className="tot"><td>Total</td><Nums vals={totals.groups[g.id]} fmt={fmt} /></tr>}
                   </tbody>
                 </table>
                 <button className="btn btn-g" style={{ width: "100%", padding: "8px" }} onClick={() => openAdd(g.id)}>+ Agregar línea</button>
