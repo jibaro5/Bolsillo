@@ -1429,10 +1429,11 @@ function App() {
     { id:"summary", icon:"📊", label:"Resumen" },
   ];
   const goTo = id => { setTab(id); setMenuOpen(false); window.scrollTo(0,0); };
-  const inboxCard = (plaid.items.length > 0 || inboxRows.length > 0) && (
+  const renderInbox = ({ collapsed = false, onToggle = null } = {}) => (plaid.items.length > 0 || inboxRows.length > 0) && (
             <div className="card" style={{padding:14, marginBottom:16}}>
-              <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:10}}>
-              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700}}>
+              <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:collapsed?0:10}}>
+              <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,flex:onToggle?1:undefined,cursor:onToggle?"pointer":undefined,minHeight:onToggle?30:undefined}} onClick={onToggle||undefined}>
+                {onToggle && <span style={{display:"inline-block",marginRight:6,transition:"transform .2s",transform:collapsed?"none":"rotate(90deg)"}}>▸</span>}
                 🏦 POR REVISAR ({inboxView.length})
                 {inboxPendingCount > 0 && <span> · {inboxPendingCount} en proceso</span>}
                 {inboxAdjustCount > 0 && <span style={{color:"#dc2626"}}> · ⚠️ {inboxAdjustCount} cambio{inboxAdjustCount!==1?"s":""} de monto</span>}
@@ -1445,6 +1446,7 @@ function App() {
                 </div>
               )}
               </div>
+              {!collapsed && (<>
               {plaid.items.filter(i => i.error).map(i => (
                 <div key={i.itemId} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",marginBottom:8,background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,fontSize:11,color:"#b91c1c"}}>
                   <span style={{flex:1}}>⚠️ <b>{i.institution || "Banco"}</b>: {bankErrorText(i.error)}</span>
@@ -1496,8 +1498,10 @@ function App() {
                 </div>
               ))}
               {inboxView.length > 10 && <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>y {inboxView.length-10} mas</div>}
+              </>)}
             </div>
           );
+  const inboxCard = renderInbox();
 
   return (
     <div style={{minHeight:"100vh",background:"#f1f5f9",fontFamily:"'DM Sans','Helvetica Neue',sans-serif",color:"#0f172a"}}>
@@ -2197,7 +2201,7 @@ function App() {
 
         {tab==="dashboard" && (
           <Dashboard
-            inboxSlot={inboxCard}
+            renderInbox={renderInbox}
             expenses={expenses}
             cards={cards}
             recommendations={recommendations}

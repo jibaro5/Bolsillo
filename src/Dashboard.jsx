@@ -84,11 +84,11 @@ function Legend({ slices, fmt }) {
 }
 
 // "Mejor tarjeta hoy": which card to use per category (also shown on Inicio).
-export function BestCardWidget({ recommendations, cards, fmt, catEmoji }) {
+export function BestCardWidget({ recommendations, cards, fmt, catEmoji, bare }) {
   if (!recommendations.length) return null;
   return (
-    <div className="card" style={{ padding: 14, marginBottom: 16 }}>
-      <div style={{ fontSize: 11, letterSpacing: 1, color: "#94a3b8", fontWeight: 700, marginBottom: 10 }}>💳 MEJOR TARJETA HOY</div>
+    <div className={bare ? undefined : "card"} style={bare ? undefined : { padding: 14, marginBottom: 16 }}>
+      {!bare && <div style={{ fontSize: 11, letterSpacing: 1, color: "#94a3b8", fontWeight: 700, marginBottom: 10 }}>💳 MEJOR TARJETA HOY</div>}
       {recommendations.map(rec => {
         const bestCard = cards.find(c => c.id === rec.best.cardId);
         const pct = rec.best.tope > 0 ? Math.min(100, Math.round(rec.best.spent / rec.best.tope * 100)) : null;
@@ -120,8 +120,35 @@ export function BestCardWidget({ recommendations, cards, fmt, catEmoji }) {
   );
 }
 
-export default function Dashboard({ inboxSlot, expenses, cards, recommendations, fmt, catEmoji, categories, owedFor, todayStr, fetcher, scriptUrl }) {
+// Card whose body folds away when you tap its heading (state kept by the parent).
+function Collapse({ title, summary, open, onToggle, children }) {
+  return (
+    <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+      <button onClick={onToggle} aria-expanded={open}
+        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", minHeight: 30, background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+        <span style={{ fontSize: 11, color: "#94a3b8", transition: "transform .2s", transform: open ? "rotate(90deg)" : "none" }}>▸</span>
+        <span style={{ flex: 1, fontSize: 11, letterSpacing: 1, color: "#94a3b8", fontWeight: 700 }}>{title}</span>
+        {!open && summary && <span style={{ fontSize: 12, fontWeight: 700, color: "#334155" }}>{summary}</span>}
+      </button>
+      {open && <div style={{ marginTop: 10 }}>{children}</div>}
+    </div>
+  );
+}
+
+const OPEN_KEY = "bolsillo_dash_open";
+const readOpen = () => {
+  try { return { best: true, inbox: true, cur: true, last: true, ...JSON.parse(localStorage.getItem(OPEN_KEY) || "{}") }; }
+  catch { return { best: true, inbox: true, cur: true, last: true }; }
+};
+
+export default function Dashboard({ renderInbox, expenses, cards, recommendations, fmt, catEmoji, categories, owedFor, todayStr, fetcher, scriptUrl }) {
   const [budget, setBudget] = useState(null); // { lines } | "none"
+  const [open, setOpen] = useState(readOpen);
+  const toggle = id => setOpen(o => {
+    const next = { ...o, [id]: !o[id] };
+    try { localStorage.setItem(OPEN_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
+    return next;
+  });
 
   useEffect(() => {
     let alive = true;
@@ -182,8 +209,6 @@ export default function Dashboard({ inboxSlot, expenses, cards, recommendations,
   const diff = last.gross - prev.gross;
   const diffPct = prev.gross > 0 ? Math.abs(diff / prev.gross * 100).toFixed(0) : null;
 
-  const secTitle = { fontSize: 11, letterSpacing: 1, color: "#94a3b8", fontWeight: 700, marginBottom: 10 };
-
   return (
     <div style={{ marginBottom: 20 }}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
@@ -201,12 +226,16 @@ export default function Dashboard({ inboxSlot, expenses, cards, recommendations,
         </div>
       </div>
 
-      <BestCardWidget recommendations={recommendations} cards={cards} fmt={fmt} catEmoji={catEmoji} />
+      {recommendations.length > 0 && (
+        <Collapse title="💳 MEJOR TARJETA HOY" open={open.best} onToggle={() => toggle("best")}
+          summary={`${recommendations[0].categoria} · ${cards.find(c => c.id === recommendations[0].best.cardId)?.nombre || ""} ${recommendations[0].best.effectiveRate}%`}>
+          <BestCardWidget bare recommendations={recommendations} cards={cards} fmt={fmt} catEmoji={catEmoji} />
+        </Collapse>
+      )}
 
-      {inboxSlot}
+      {renderInbox({ collapsed: !open.inbox, onToggle: () => toggle("inbox") })}
 
-      <div className="card" style={{ padding: 14, marginBottom: 16 }}>
-        <div style={secTitle}>📆 MES ACTUAL · {monthName(thisKey).toUpperCase()}</div>
+      <Collapse title={`📆 MES ACTUAL · ${monthName(thisKey).toUpperCase()}`} summary={fmt(cur.gross)} open={open.cur} onToggle={() => toggle("cur")}>
         <div style={{ fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 8 }}>Gastado hasta hoy, por categoría</div>
         {curSlices.length === 0
           ? <div style={{ fontSize: 12, color: "#94a3b8" }}>Todavía no hay gastos este mes.</div>
@@ -232,10 +261,9 @@ export default function Dashboard({ inboxSlot, expenses, cards, recommendations,
               </div>
             ))}
         </div>
-      </div>
+      </Collapse>
 
-      <div className="card" style={{ padding: 14 }}>
-        <div style={secTitle}>📅 MES PASADO · {monthName(lastKey).toUpperCase()}</div>
+      <Collapse title={`📅 MES PASADO · ${monthName(lastKey).toUpperCase()}`} summary={last.count ? fmt(last.gross) : ""} open={open.last} onToggle={() => toggle("last")}>
         {last.count === 0 ? <div style={{ fontSize: 12, color: "#94a3b8" }}>No hay gastos registrados en {monthName(lastKey)}.</div> : (
           <>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
@@ -264,7 +292,7 @@ export default function Dashboard({ inboxSlot, expenses, cards, recommendations,
             </div>
           </>
         )}
-      </div>
+      </Collapse>
     </div>
   );
 }
