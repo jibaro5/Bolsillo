@@ -87,7 +87,7 @@ function Legend({ slices, fmt }) {
 export function BestCardWidget({ recommendations, cards, fmt, catEmoji, bare }) {
   if (!recommendations.length) return null;
   return (
-    <div className={bare ? undefined : "card"} style={bare ? undefined : { padding: 14, marginBottom: 16 }}>
+    <div id="mejor-tarjeta" className={bare ? undefined : "card"} style={bare ? undefined : { padding: 14, marginBottom: 16 }}>
       {!bare && <div style={{ fontSize: 11, letterSpacing: 1, color: "#94a3b8", fontWeight: 700, marginBottom: 10 }}>💳 MEJOR TARJETA HOY</div>}
       {recommendations.map(rec => {
         const bestCard = cards.find(c => c.id === rec.best.cardId);
@@ -121,17 +121,32 @@ export function BestCardWidget({ recommendations, cards, fmt, catEmoji, bare }) 
 }
 
 // Card whose body folds away when you tap its heading (state kept by the parent).
-function Collapse({ title, summary, open, onToggle, children }) {
+function Collapse({ title, summary, open, onToggle, go, children }) {
   return (
     <div className="card" style={{ padding: 14, marginBottom: 16 }}>
-      <button onClick={onToggle} aria-expanded={open}
-        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", minHeight: 30, background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
-        <span style={{ fontSize: 11, color: "#94a3b8", transition: "transform .2s", transform: open ? "rotate(90deg)" : "none" }}>▸</span>
-        <span style={{ flex: 1, fontSize: 11, letterSpacing: 1, color: "#94a3b8", fontWeight: 700 }}>{title}</span>
-        {!open && summary && <span style={{ fontSize: 12, fontWeight: 700, color: "#334155" }}>{summary}</span>}
-      </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button onClick={onToggle} aria-expanded={open}
+          style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, minHeight: 30, background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+          <span style={{ fontSize: 11, color: "#94a3b8", transition: "transform .2s", transform: open ? "rotate(90deg)" : "none" }}>▸</span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: "block", fontSize: 11, letterSpacing: 1, color: "#94a3b8", fontWeight: 700 }}>{title}</span>
+            {!open && summary && <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginTop: 2 }}>{summary}</span>}
+          </span>
+        </button>
+        {go && <GoLink {...go} />}
+      </div>
       {open && <div style={{ marginTop: 10 }}>{children}</div>}
     </div>
+  );
+}
+
+// Link to the section of the app where this block lives.
+export function GoLink({ label, onClick }) {
+  return (
+    <button onClick={onClick} aria-label={`Ir a ${label}`}
+      style={{ flexShrink: 0, border: "none", background: "#eff6ff", color: "#0f4c81", borderRadius: 99, padding: "5px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+      {label} ›
+    </button>
   );
 }
 
@@ -141,7 +156,7 @@ const readOpen = () => {
   catch { return { best: true, inbox: true, cur: true, last: true }; }
 };
 
-export default function Dashboard({ renderInbox, expenses, cards, recommendations, fmt, catEmoji, categories, owedFor, todayStr, fetcher, scriptUrl }) {
+export default function Dashboard({ onGo, renderInbox, expenses, cards, recommendations, fmt, catEmoji, categories, owedFor, todayStr, fetcher, scriptUrl }) {
   const [budget, setBudget] = useState(null); // { lines } | "none"
   const [open, setOpen] = useState(readOpen);
   const toggle = id => setOpen(o => {
@@ -227,15 +242,15 @@ export default function Dashboard({ renderInbox, expenses, cards, recommendation
       </div>
 
       {recommendations.length > 0 && (
-        <Collapse title="💳 MEJOR TARJETA HOY" open={open.best} onToggle={() => toggle("best")}
+        <Collapse title="💳 MEJOR TARJETA HOY" open={open.best} onToggle={() => toggle("best")} go={{ label: "Crédito", onClick: () => onGo("list", "mejor-tarjeta") }}
           summary={`${recommendations[0].categoria} · ${cards.find(c => c.id === recommendations[0].best.cardId)?.nombre || ""} ${recommendations[0].best.effectiveRate}%`}>
           <BestCardWidget bare recommendations={recommendations} cards={cards} fmt={fmt} catEmoji={catEmoji} />
         </Collapse>
       )}
 
-      {renderInbox({ collapsed: !open.inbox, onToggle: () => toggle("inbox") })}
+      {renderInbox({ collapsed: !open.inbox, onToggle: () => toggle("inbox"), onGo: () => onGo("list", "por-revisar") })}
 
-      <Collapse title={`📆 MES ACTUAL · ${monthName(thisKey).toUpperCase()}`} summary={fmt(cur.gross)} open={open.cur} onToggle={() => toggle("cur")}>
+      <Collapse title={`📆 MES ACTUAL · ${monthName(thisKey).toUpperCase()}`} summary={fmt(cur.gross)} open={open.cur} onToggle={() => toggle("cur")} go={{ label: "Presupuesto", onClick: () => onGo("budget") }}>
         <div style={{ fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 8 }}>Gastado hasta hoy, por categoría</div>
         {curSlices.length === 0
           ? <div style={{ fontSize: 12, color: "#94a3b8" }}>Todavía no hay gastos este mes.</div>
@@ -263,7 +278,7 @@ export default function Dashboard({ renderInbox, expenses, cards, recommendation
         </div>
       </Collapse>
 
-      <Collapse title={`📅 MES PASADO · ${monthName(lastKey).toUpperCase()}`} summary={last.count ? fmt(last.gross) : ""} open={open.last} onToggle={() => toggle("last")}>
+      <Collapse title={`📅 MES PASADO · ${monthName(lastKey).toUpperCase()}`} summary={last.count ? fmt(last.gross) : ""} open={open.last} onToggle={() => toggle("last")} go={{ label: "Resumen", onClick: () => onGo("summary") }}>
         {last.count === 0 ? <div style={{ fontSize: 12, color: "#94a3b8" }}>No hay gastos registrados en {monthName(lastKey)}.</div> : (
           <>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>

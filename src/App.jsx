@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import Budget from "./Budget.jsx";
-import Dashboard, { BestCardWidget } from "./Dashboard.jsx";
+import Dashboard, { BestCardWidget, GoLink } from "./Dashboard.jsx";
 import Split from "./Split.jsx";
 
 const SCRIPT_URL = "/api/sheet";
@@ -1431,8 +1431,17 @@ function App() {
     { id:"summary", icon:"📊", label:"Resumen" },
   ];
   const goTo = id => { setTab(id); setMenuOpen(false); window.scrollTo(0,0); };
-  const renderInbox = ({ collapsed = false, onToggle = null } = {}) => (plaid.items.length > 0 || inboxRows.length > 0) && (
-            <div className="card" style={{padding:14, marginBottom:16}}>
+  // Jump to a section, and to a spot inside it once it has rendered.
+  const goSection = (id, anchor) => {
+    setTab(id);
+    window.scrollTo(0,0);
+    if (anchor) setTimeout(() => {
+      const el = document.getElementById(anchor);
+      if (el) window.scrollTo({ top: Math.max(0, el.getBoundingClientRect().top + window.scrollY - 12) });
+    }, 80);
+  };
+  const renderInbox = ({ collapsed = false, onToggle = null, onGo = null } = {}) => (plaid.items.length > 0 || inboxRows.length > 0) && (
+            <div id="por-revisar" className="card" style={{padding:14, marginBottom:16}}>
               <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:collapsed?0:10}}>
               <div style={{fontSize:11,letterSpacing:1,color:"#94a3b8",fontWeight:700,flex:onToggle?1:undefined,cursor:onToggle?"pointer":undefined,minHeight:onToggle?30:undefined}} onClick={onToggle||undefined}>
                 {onToggle && <span style={{display:"inline-block",marginRight:6,transition:"transform .2s",transform:collapsed?"none":"rotate(90deg)"}}>▸</span>}
@@ -1440,6 +1449,7 @@ function App() {
                 {inboxPendingCount > 0 && <span> · {inboxPendingCount} en proceso</span>}
                 {inboxAdjustCount > 0 && <span style={{color:"#dc2626"}}> · ⚠️ {inboxAdjustCount} cambio{inboxAdjustCount!==1?"s":""} de monto</span>}
                 {inboxDupCount > 0 && <span style={{color:"#b45309"}}> · ⚠️ {inboxDupCount} posible{inboxDupCount!==1?"s":""} duplicado{inboxDupCount!==1?"s":""}</span>}
+                {onGo && <div style={{marginTop:6}}><GoLink label="Crédito" onClick={e=>{e.stopPropagation(); onGo();}} /></div>}
               </div>
               {plaid.items.length > 0 && (
                 <div style={{textAlign:"right",flexShrink:0}}>
@@ -2204,6 +2214,7 @@ function App() {
         {tab==="dashboard" && (
           <Dashboard
             renderInbox={renderInbox}
+            onGo={goSection}
             expenses={expenses}
             cards={cards}
             recommendations={recommendations}
