@@ -3,6 +3,7 @@ import { requireAuth } from "../lib/session.js";
 import { listCards, addCard, editCard, deleteCard, getCard } from "../lib/cardsStore.js";
 import { listRules, addRule, editRule, deleteRule } from "../lib/rewardsStore.js";
 import { listLines, addLine, editLine, deleteLine, getConfig, setConfig } from "../lib/budgetStore.js";
+import { rebuildBudgetView, refreshBudgetView } from "../lib/budgetView.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -162,6 +163,10 @@ async function deleteRecurring(p) {
   });
 }
 
+// Keeps the "Vista Presupuesto" tab in Drive in line with the budget lines. The real
+// change is already saved, so a slow or failed refresh never holds up or fails the request.
+const refreshView = () => Promise.race([refreshBudgetView(), new Promise(r => setTimeout(r, 6000))]);
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -234,9 +239,10 @@ export default async function handler(req, res) {
     else if (action === "rules-delete") { await deleteRule(body.id); result = { ok:true }; }
 
     else if (action === "budget-list") result = { lines: await listLines(), config: await getConfig() };
-    else if (action === "budget-add") result = await addLine(body);
-    else if (action === "budget-edit") { await editLine(body.id, body); result = { ok:true }; }
-    else if (action === "budget-delete") { await deleteLine(body.id); result = { ok:true }; }
+    else if (action === "budget-add") { result = await addLine(body); await refreshView(); }
+    else if (action === "budget-edit") { const r = await editLine(body.id, body); if (r?.structural) await refreshView(); result = { ok:true }; }
+    else if (action === "budget-delete") { await deleteLine(body.id); await refreshView(); result = { ok:true }; }
+    else if (action === "budget-view") result = { ok:true, ...(await rebuildBudgetView()) };
     else if (action === "budget-config") { await setConfig(body); result = { ok:true, config: await getConfig() }; }
 
     res.status(200).json(result);
