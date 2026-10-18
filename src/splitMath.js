@@ -34,7 +34,7 @@ export function allocate(total, weights) {
   return out;
 }
 
-// A tax / tip entry is a percentage of the assigned subtotal ("pct") or a fixed amount ("amt").
+// A tax / tip entry is a percentage of the subtotal ("pct") or a fixed amount ("amt").
 const extraCents = (spec, baseCents) => {
   if (!spec || spec.value === "" || spec.value == null) return 0;
   if (spec.mode === "amt") return Math.max(0, toCents(spec.value));
@@ -44,16 +44,18 @@ const extraCents = (spec, baseCents) => {
 
 // items:  [{ id, name, price, people: [personId...] }]   (empty people = not assigned yet)
 // people: [{ id, name, mergedInto }]                     (mergedInto = another person's id that pays for them)
+// subtotal: the bill's subtotal before tax and tip, as printed on the receipt (optional; "" = use the items).
 // Returns per-person totals, per-group (merged plates) totals and bill totals, all in cents.
-export function computeSplit({ items, people, tax, tip }) {
+export function computeSplit({ items, people, subtotal, tax, tip }) {
   const ids = people.map(p => p.id);
   const sub = Object.fromEntries(ids.map(id => [id, 0]));
   const lines = Object.fromEntries(ids.map(id => [id, []]));
-  let unassigned = 0, unassignedCount = 0, rot = 0;
+  let unassigned = 0, unassignedCount = 0, rot = 0, itemsTotal = 0;
 
   for (const it of items) {
     const price = toCents(it.price);
     if (price <= 0) continue;
+    itemsTotal += price;
     const who = (it.people || []).filter(id => id in sub);
     if (!who.length) { unassigned += price; unassignedCount += 1; continue; }
     evenShares(price, who.length, rot).forEach((c, i) => {
@@ -64,8 +66,11 @@ export function computeSplit({ items, people, tax, tip }) {
   }
 
   const assigned = ids.reduce((s, id) => s + sub[id], 0);
-  const taxCents = extraCents(tax, assigned);
-  const tipCents = extraCents(tip, assigned);
+  // Percentages apply to the receipt's subtotal when it was entered, otherwise to what's assigned.
+  const declared = Math.max(0, toCents(subtotal));
+  const base = declared > 0 ? declared : assigned;
+  const taxCents = extraCents(tax, base);
+  const tipCents = extraCents(tip, base);
   const weights = ids.map(id => sub[id]);
   const taxShare = allocate(taxCents, weights);
   const tipShare = allocate(tipCents, weights);
@@ -86,7 +91,12 @@ export function computeSplit({ items, people, tax, tip }) {
     groups.push({ head: p, members, subtotal: sum("subtotal"), tax: sum("tax"), tip: sum("tip"), total: sum("total") });
   }
 
-  return { per, groups, assigned, unassigned, unassignedCount, taxCents, tipCents, grand: assigned + taxCents + tipCents };
+  const allocated = assigned + taxCents + tipCents; // what the per-person totals add up to
+  // remaining > 0: part of the subtotal isn't on any item yet; < 0: the items add up to more than the subtotal.
+  const remaining = declared > 0 ? declared - itemsTotal : 0;
+  const grand = declared > 0 ? declared + taxCents + tipCents : allocated;
+  const complete = unassigned === 0 && remaining === 0 && grand > 0;
+  return { per, groups, assigned, unassigned, unassignedCount, itemsTotal, declared, remaining, taxCents, tipCents, allocated, grand, complete };
 }
 
 const MONTHS_SHORT = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];

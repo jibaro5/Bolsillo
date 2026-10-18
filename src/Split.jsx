@@ -1,22 +1,25 @@
 import { useState, useEffect, useMemo } from "react";
 import { computeSplit, buildMessage, money, toCents } from "./splitMath.js";
 
-// "Dividir cuenta": add the items of a bill, give each one to the people who
-// had it (tap their names), put in tax and tip, and get everyone's share plus
-// a neutral message to send. Inspired by Plates by Splitwise. Math in splitMath.js.
+// "Dividir cuenta", step by step: 1 people, 2 subtotal and tax from the receipt,
+// 3 dishes (assigned to people, with what's left of the subtotal), 4 tip and
+// total, 5 message. Inspired by Plates by Splitwise. Math in splitMath.js.
 
-const DRAFT_KEY = "bolsillo_split_draft";
+const DRAFT_KEY = "bolsillo_split_draft_v2";
 const COLORS = ["#0f4c81", "#b45309", "#059669", "#7c3aed", "#db2777", "#0891b2", "#65a30d", "#dc2626", "#475569", "#ca8a04"];
 const MAX_PEOPLE = 10;
+const REST_ID = "rest";
 const uid = () => Math.random().toString(36).slice(2, 9);
+const blankItem = () => ({ id: uid(), name: "", price: "", people: [] });
 
 const fresh = (todayStr, me) => {
   const id = uid();
   return {
     merchant: "", date: todayStr, payer: id, withItems: false,
     people: [{ id, name: me, mergedInto: null }],
-    items: [{ id: uid(), name: "", price: "", people: [] }],
-    tax: { mode: "pct", value: "" }, tip: { mode: "pct", value: "" },
+    subtotal: "",
+    items: [blankItem()],
+    tax: { mode: "amt", value: "" }, tip: { mode: "pct", value: "" },
   };
 };
 const readDraft = (todayStr, me) => {
@@ -38,7 +41,8 @@ export default function Split({ suggestedNames, me = "Omar", todayStr, showToast
 
   const idx = Object.fromEntries(s.people.map((p, i) => [p.id, i]));
   const colorOf = id => COLORS[(idx[id] ?? 0) % COLORS.length];
-  const result = useMemo(() => computeSplit({ items: s.items, people: s.people, tax: s.tax, tip: s.tip }), [s.items, s.people, s.tax, s.tip]);
+  const result = useMemo(() => computeSplit({ items: s.items, people: s.people, subtotal: s.subtotal, tax: s.tax, tip: s.tip }),
+    [s.items, s.people, s.subtotal, s.tax, s.tip]);
   const message = useMemo(() => buildMessage({ merchant: s.merchant, date: s.date, payerId: s.payer, result, withItems: s.withItems }),
     [s.merchant, s.date, s.payer, result, s.withItems]);
 
@@ -61,21 +65,29 @@ export default function Split({ suggestedNames, me = "Omar", todayStr, showToast
   }
   const renamePerson = (id, name) => set({ people: s.people.map(p => p.id === id ? { ...p, name } : p) });
   function mergePerson(id, headId) {
-    // A plate that others are merged into can't itself be merged away.
     set({ people: s.people.map(p => p.id === id ? { ...p, mergedInto: headId || null } : p.mergedInto === id && headId ? { ...p, mergedInto: headId } : p) });
   }
 
-  // ---- items ----
+  // ---- dishes ----
   const updateItem = (id, patch) => set({ items: s.items.map(it => it.id === id ? { ...it, ...patch } : it) });
-  const addItem = () => set({ items: [...s.items, { id: uid(), name: "", price: "", people: [] }] });
-  const removeItem = id => set({ items: s.items.length > 1 ? s.items.filter(it => it.id !== id) : [{ id: uid(), name: "", price: "", people: [] }] });
+  const addItem = () => set({ items: [...s.items, blankItem()] });
+  const removeItem = id => set({ items: s.items.length > 1 ? s.items.filter(it => it.id !== id) : [blankItem()] });
   const toggleWho = (itemId, personId) => set({
     items: s.items.map(it => it.id !== itemId ? it : { ...it, people: it.people.includes(personId) ? it.people.filter(x => x !== personId) : [...it.people, personId] }),
   });
-  const splitRest = () => set({
-    items: s.items.map(it => toCents(it.price) > 0 && !it.people.length ? { ...it, people: s.people.map(p => p.id) } : it),
-  });
-  const everyone = itemId => updateItem(itemId, { people: s.people.map(p => p.id) });
+  const allIds = s.people.map(p => p.id);
+  const isEveryone = it => allIds.length > 0 && allIds.every(id => it.people.includes(id));
+  const toggleEveryone = it => updateItem(it.id, { people: isEveryone(it) ? [] : allIds });
+
+  // What's left of the subtotal goes to everyone in equal parts, as one more line.
+  function splitRest() {
+    if (result.remaining <= 0) return;
+    const price = (result.remaining / 100).toFixed(2);
+    const has = s.items.some(it => it.id === REST_ID);
+    const rest = { id: REST_ID, name: "Resto de la cuenta", price, people: allIds };
+    const items = has ? s.items.map(it => it.id === REST_ID ? rest : it) : [...s.items.filter(it => it.name || it.price), rest];
+    set({ items });
+  }
 
   function reset() {
     if (!window.confirm("¿Empezar una cuenta nueva? Se borra la actual.")) return;
@@ -93,54 +105,50 @@ export default function Split({ suggestedNames, me = "Omar", todayStr, showToast
     catch { showToast("No se pudo copiar", "warn"); }
   }
 
-  const pendingItems = s.items.filter(it => toCents(it.price) > 0 && !it.people.length);
   const heads = s.people.filter(p => !p.mergedInto);
-  const hasAny = result.grand > 0;
+  const hasSubtotal = result.declared > 0;
+  const over = result.remaining < 0;
+  const done = hasSubtotal && result.remaining === 0;
+  const pendingItems = s.items.filter(it => toCents(it.price) > 0 && !it.people.length);
+  const barColor = over ? "#dc2626" : done ? "#059669" : "#0f4c81";
+  const barPct = hasSubtotal ? Math.min(100, Math.round((result.itemsTotal / result.declared) * 100)) : 0;
 
   const css = `
     .sp-card{background:#fff;border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(15,23,42,.06);}
     .sp-title{font-size:11px;letter-spacing:1px;font-weight:700;color:#94a3b8;margin-bottom:10px;}
     .sp-chip{display:inline-flex;align-items:center;gap:5px;padding:6px 11px;border-radius:99px;border:1.5px solid #e2e8f0;background:#fff;font-size:12px;font-weight:600;color:#64748b;cursor:pointer;font-family:inherit;margin:0 5px 5px 0;}
+    .sp-chip.on{background:#eff6ff;border-color:#0f4c81;color:#0f4c81;}
     .sp-in{background:#fff;border:1.5px solid #e2e8f0;border-radius:10px;padding:9px 11px;font-family:inherit;font-size:14px;color:#0f172a;min-width:0;}
     .sp-in:focus{border-color:#0f4c81;}
     .sp-row{display:flex;gap:8px;align-items:center;}
     .sp-mini{border:none;background:none;color:#94a3b8;font-size:12px;cursor:pointer;font-family:inherit;padding:4px 6px;}
     .sp-sum{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;color:#475569;}
+    .sp-lab{font-size:12px;font-weight:600;color:#475569;margin-bottom:5px;}
+    .sp-bar{height:8px;background:#f1f5f9;border-radius:99px;overflow:hidden;}
+    .sp-bar>div{height:100%;border-radius:99px;transition:width .2s;}
   `;
 
-  const taxTip = (label, key, quick) => (
-    <div style={{ marginBottom: 12 }}>
-      <div className="sp-row" style={{ marginBottom: 6 }}>
-        <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{label}</span>
-        <div className="ptt" style={{ width: 96 }}>
-          <button type="button" className={`pto ${s[key].mode === "pct" ? "on" : ""}`} onClick={() => set({ [key]: { ...s[key], mode: "pct" } })}>%</button>
-          <button type="button" className={`pto ${s[key].mode === "amt" ? "on" : ""}`} onClick={() => set({ [key]: { ...s[key], mode: "amt" } })}>$</button>
-        </div>
-        <input className="sp-in" style={{ width: 92, textAlign: "right" }} type="number" inputMode="decimal" min="0" step="0.01"
-          placeholder={s[key].mode === "pct" ? "0" : "0.00"} value={s[key].value} aria-label={label}
-          onChange={e => set({ [key]: { ...s[key], value: e.target.value } })} />
-      </div>
-      <div>
-        {quick.map(q => (
-          <button key={q} type="button" className="sp-chip" style={{ padding: "4px 10px", fontSize: 11 }}
-            onClick={() => set({ [key]: { mode: "pct", value: String(q) } })}>{q}%</button>
-        ))}
-      </div>
+  // Tax or tip: an amount ($) or a percentage (%) of the subtotal.
+  const modeToggle = key => (
+    <div className="ptt" style={{ width: 84, flexShrink: 0 }}>
+      <button type="button" className={`pto ${s[key].mode === "pct" ? "on" : ""}`} onClick={() => set({ [key]: { ...s[key], mode: "pct", value: "" } })}>%</button>
+      <button type="button" className={`pto ${s[key].mode === "amt" ? "on" : ""}`} onClick={() => set({ [key]: { ...s[key], mode: "amt", value: "" } })}>$</button>
     </div>
   );
+  const amountInput = (key, label) => (
+    <input className="sp-in" style={{ flex: 1, textAlign: "right" }} type="number" inputMode="decimal" min="0" step="0.01"
+      placeholder={s[key].mode === "pct" ? "0" : "0.00"} value={s[key].value} aria-label={label}
+      onChange={e => set({ [key]: { ...s[key], value: e.target.value } })} />
+  );
+  const tipIs = pct => s.tip.mode === "pct" && String(s.tip.value) === String(pct);
 
   return (
     <div>
       <style>{css}</style>
 
+      {/* 1. People */}
       <div className="sp-card">
-        <div className="sp-title">CUENTA</div>
-        <input className="sp-in" style={{ width: "100%", marginBottom: 8 }} placeholder="Restaurante o motivo (ej. Texas Roadhouse)" value={s.merchant} onChange={e => set({ merchant: e.target.value })} />
-        <input className="sp-in" style={{ width: "100%" }} type="date" value={s.date} onChange={e => set({ date: e.target.value })} aria-label="Fecha" />
-      </div>
-
-      <div className="sp-card">
-        <div className="sp-title">PLATOS ({s.people.length}/{MAX_PEOPLE})</div>
+        <div className="sp-title">1 · QUIÉNES PARTICIPAN ({s.people.length}/{MAX_PEOPLE})</div>
         {s.people.map(p => {
           const t = result.per[p.id]?.total || 0;
           const others = heads.filter(h => h.id !== p.id && !s.people.some(x => x.mergedInto === p.id));
@@ -149,12 +157,11 @@ export default function Split({ suggestedNames, me = "Omar", todayStr, showToast
               <div className="sp-row">
                 <span style={{ width: 12, height: 12, borderRadius: "50%", background: colorOf(p.id), flexShrink: 0 }} />
                 <input className="sp-in" style={{ flex: 1 }} value={p.name} onChange={e => renamePerson(p.id, e.target.value)} aria-label="Nombre" />
-                <b style={{ fontSize: 14, fontVariantNumeric: "tabular-nums", minWidth: 64, textAlign: "right" }}>{money(t)}</b>
+                {t > 0 && <b style={{ fontSize: 13, fontVariantNumeric: "tabular-nums", color: "#64748b" }}>{money(t)}</b>}
                 {s.people.length > 1 && <button className="sp-mini" aria-label={`Quitar a ${p.name}`} onClick={() => removePerson(p.id)}>✕</button>}
               </div>
               <div className="sp-row" style={{ marginTop: 6, paddingLeft: 20, flexWrap: "wrap" }}>
-                <button type="button" className="sp-chip" aria-pressed={s.payer === p.id} onClick={() => set({ payer: p.id })}
-                  style={{ margin: 0, ...(s.payer === p.id ? { background: "#eff6ff", borderColor: "#0f4c81", color: "#0f4c81" } : null) }}>
+                <button type="button" className={`sp-chip ${s.payer === p.id ? "on" : ""}`} aria-pressed={s.payer === p.id} style={{ margin: 0 }} onClick={() => set({ payer: p.id })}>
                   {s.payer === p.id ? "✓ Pagó" : "Pagó"}
                 </button>
                 {s.people.length > 1 && (
@@ -182,18 +189,54 @@ export default function Split({ suggestedNames, me = "Omar", todayStr, showToast
         )}
       </div>
 
+      {/* 2. Subtotal and tax */}
       <div className="sp-card">
-        <div className="sp-title">ÍTEMS</div>
+        <div className="sp-title">2 · SUBTOTAL E IMPUESTO DEL RECIBO</div>
+        <div className="sp-lab">Subtotal (antes de impuesto y propina)</div>
+        <input className="sp-in" style={{ width: "100%", marginBottom: 14, fontSize: 16 }} type="number" inputMode="decimal" min="0" step="0.01" placeholder="$ 0.00"
+          value={s.subtotal} onChange={e => set({ subtotal: e.target.value })} aria-label="Subtotal" />
+        <div className="sp-lab">Impuesto total</div>
+        <div className="sp-row">
+          {modeToggle("tax")}
+          {amountInput("tax", "Impuesto")}
+        </div>
+        <div style={{ marginTop: 8, display: "flex", alignItems: "center", flexWrap: "wrap" }}>
+          <button type="button" className={`sp-chip ${s.tax.mode === "pct" && String(s.tax.value) === "11.5" ? "on" : ""}`} style={{ padding: "4px 10px", fontSize: 11 }}
+            onClick={() => set({ tax: { mode: "pct", value: "11.5" } })}>IVU 11.5%</button>
+          {s.tax.mode === "pct" && result.taxCents > 0 && <span style={{ fontSize: 12, color: "#64748b" }}>= {money(result.taxCents)}</span>}
+        </div>
+      </div>
+
+      {/* 3. Dishes */}
+      <div className="sp-card">
+        <div className="sp-title">3 · PLATOS</div>
+        {hasSubtotal ? (
+          <div style={{ marginBottom: 12 }}>
+            <div className="sp-row" style={{ justifyContent: "space-between", marginBottom: 6, fontSize: 12 }}>
+              <span style={{ color: "#64748b" }}>Asignado {money(result.itemsTotal)} de {money(result.declared)}</span>
+              <b style={{ color: barColor }}>{over ? `Te pasaste ${money(-result.remaining)}` : done ? "Completo ✓" : `Quedan ${money(result.remaining)}`}</b>
+            </div>
+            <div className="sp-bar"><div style={{ width: `${barPct}%`, background: barColor }} /></div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 12 }}>Pon el subtotal arriba para ver cuánto va quedando mientras agregas platos.</div>
+        )}
+
         {s.items.map(it => {
           const pending = toCents(it.price) > 0 && !it.people.length;
           return (
             <div key={it.id} style={{ padding: "10px 0", borderBottom: "1px solid #f1f5f9" }}>
               <div className="sp-row">
-                <input className="sp-in" style={{ flex: 1 }} placeholder="Ítem" value={it.name} onChange={e => updateItem(it.id, { name: e.target.value })} aria-label="Ítem" />
+                <input className="sp-in" style={{ flex: 1 }} placeholder="Plato" value={it.name} onChange={e => updateItem(it.id, { name: e.target.value })} aria-label="Plato" />
                 <input className="sp-in" style={{ width: 84, textAlign: "right" }} type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" value={it.price} onChange={e => updateItem(it.id, { price: e.target.value })} aria-label="Precio" />
-                <button className="sp-mini" aria-label="Quitar ítem" onClick={() => removeItem(it.id)}>✕</button>
+                <button className="sp-mini" aria-label="Quitar plato" onClick={() => removeItem(it.id)}>✕</button>
               </div>
               <div style={{ marginTop: 8 }}>
+                {s.people.length > 1 && (
+                  <button type="button" className={`sp-chip ${isEveryone(it) ? "on" : ""}`} aria-pressed={isEveryone(it)} onClick={() => toggleEveryone(it)}>
+                    {isEveryone(it) ? "✓ " : ""}Partes iguales
+                  </button>
+                )}
                 {s.people.map(p => {
                   const on = it.people.includes(p.id);
                   return (
@@ -203,35 +246,48 @@ export default function Split({ suggestedNames, me = "Omar", todayStr, showToast
                     </button>
                   );
                 })}
-                {s.people.length > 1 && it.people.length !== s.people.length && <button type="button" className="sp-mini" onClick={() => everyone(it.id)}>todos</button>}
                 {pending && <span style={{ fontSize: 11, color: "#b45309", fontWeight: 700, marginLeft: 4 }}>Sin asignar</span>}
                 {it.people.length > 1 && toCents(it.price) > 0 && <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: 4 }}>{money(Math.floor(toCents(it.price) / it.people.length))} c/u</span>}
               </div>
             </div>
           );
         })}
+
         <div className="sp-row" style={{ marginTop: 10 }}>
-          <button className="btn btn-g" style={{ flex: 1 }} onClick={addItem}>+ Ítem</button>
-          <button className="btn btn-g" style={{ flex: 1 }} onClick={splitRest} disabled={!pendingItems.length}>Dividir el resto</button>
+          <button className="btn btn-g" style={{ flex: 1 }} onClick={addItem}>+ Plato</button>
+          <button className="btn btn-g" style={{ flex: 1 }} onClick={splitRest} disabled={!(result.remaining > 0)}>Dividir el resto</button>
         </div>
-        {pendingItems.length > 0 && <div style={{ fontSize: 11, color: "#b45309", marginTop: 8 }}>{pendingItems.length} ítem{pendingItems.length !== 1 ? "s" : ""} sin asignar ({money(result.unassigned)}). “Dividir el resto” los reparte en partes iguales entre todos.</div>}
+        {pendingItems.length > 0 && <div style={{ fontSize: 11, color: "#b45309", marginTop: 8 }}>{pendingItems.length} plato{pendingItems.length !== 1 ? "s" : ""} sin asignar ({money(result.unassigned)}). Toca “Partes iguales” o los nombres de quienes lo comieron.</div>}
+        {result.remaining > 0 && <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>“Dividir el resto” reparte los {money(result.remaining)} que faltan en partes iguales entre todos.</div>}
       </div>
 
+      {/* 4. Tip and total */}
       <div className="sp-card">
-        <div className="sp-title">IMPUESTO Y PROPINA</div>
-        {taxTip("Impuesto", "tax", [11.5])}
-        {taxTip("Propina", "tip", [15, 18, 20])}
-        <div style={{ fontSize: 11, color: "#94a3b8" }}>Se reparten en proporción a lo que consumió cada plato. El porcentaje se calcula sobre el subtotal de lo asignado.</div>
-      </div>
-
-      <div className="sp-card">
-        <div className="sp-title">RESULTADO</div>
-        <div className="sp-sum"><span>Subtotal</span><span>{money(result.assigned)}</span></div>
+        <div className="sp-title">4 · PROPINA Y TOTAL</div>
+        <div className="sp-sum"><span>Subtotal</span><span>{money(hasSubtotal ? result.declared : result.assigned)}</span></div>
         <div className="sp-sum"><span>Impuesto</span><span>{money(result.taxCents)}</span></div>
-        <div className="sp-sum"><span>Propina</span><span>{money(result.tipCents)}</span></div>
-        <div className="sp-sum" style={{ fontWeight: 700, color: "#0f172a", borderTop: "1px solid #e2e8f0", marginTop: 4, paddingTop: 8 }}><span>Total</span><span>{money(result.grand)}</span></div>
 
-        <div style={{ marginTop: 14 }}>
+        <div className="sp-lab" style={{ marginTop: 12 }}>Propina</div>
+        <div style={{ marginBottom: 6 }}>
+          {[15, 18, 20].map(q => (
+            <button key={q} type="button" className={`sp-chip ${tipIs(q) ? "on" : ""}`} onClick={() => set({ tip: { mode: "pct", value: String(q) } })}>{q}%</button>
+          ))}
+          <button type="button" className={`sp-chip ${s.tip.value !== "" && ![15, 18, 20].some(tipIs) ? "on" : ""}`} onClick={() => set({ tip: { mode: "amt", value: "" } })}>Otro</button>
+          <button type="button" className="sp-chip" onClick={() => set({ tip: { mode: "pct", value: "" } })}>Sin propina</button>
+        </div>
+        <div className="sp-row">
+          {modeToggle("tip")}
+          {amountInput("tip", "Propina")}
+        </div>
+        <div className="sp-sum" style={{ marginTop: 8 }}><span>Propina{s.tip.mode === "pct" && s.tip.value ? ` (${s.tip.value}%)` : ""}</span><span>{money(result.tipCents)}</span></div>
+
+        <div className="sp-sum" style={{ fontWeight: 700, fontSize: 17, color: "#0f172a", borderTop: "1px solid #e2e8f0", marginTop: 6, paddingTop: 10 }}>
+          <span>Total</span><span>{money(result.grand)}</span>
+        </div>
+        <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>La propina y el impuesto se reparten en proporción a lo que consumió cada quien. La propina se calcula sobre el subtotal.</div>
+
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid #f1f5f9" }}>
+          <div className="sp-title" style={{ marginBottom: 6 }}>CADA QUIEN</div>
           {result.groups.map(g => (
             <div key={g.head.id} className="sp-row" style={{ padding: "6px 0" }}>
               <span style={{ width: 10, height: 10, borderRadius: "50%", background: colorOf(g.head.id) }} />
@@ -245,18 +301,27 @@ export default function Split({ suggestedNames, me = "Omar", todayStr, showToast
         </div>
       </div>
 
+      {/* 5. Message */}
       <div className="sp-card">
-        <div className="sp-title">MENSAJE PARA EL GRUPO</div>
-        <div style={{ background: "#f8fafc", borderRadius: 10, padding: 12, fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap", color: "#334155" }}>{hasAny ? message : "Agrega ítems y asígnalos para ver el mensaje."}</div>
+        <div className="sp-title">5 · MENSAJE PARA EL GRUPO</div>
+        <input className="sp-in" style={{ width: "100%", marginBottom: 8 }} placeholder="Restaurante o motivo (ej. Texas Roadhouse)" value={s.merchant} onChange={e => set({ merchant: e.target.value })} aria-label="Restaurante o motivo" />
+        <input className="sp-in" style={{ width: "100%", marginBottom: 10 }} type="date" value={s.date} onChange={e => set({ date: e.target.value })} aria-label="Fecha" />
+        <div style={{ background: "#f8fafc", borderRadius: 10, padding: 12, fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap", color: "#334155" }}>
+          {result.grand > 0 ? message : "Agrega el subtotal y los platos para ver el mensaje."}
+        </div>
         <div style={{ margin: "10px 0" }}>
-          <button type="button" className="sp-chip" aria-pressed={s.withItems} onClick={() => set({ withItems: !s.withItems })}
-            style={s.withItems ? { background: "#eff6ff", borderColor: "#0f4c81", color: "#0f4c81" } : undefined}>
-            {s.withItems ? "✓ " : ""}Incluir el desglose por ítem
+          <button type="button" className={`sp-chip ${s.withItems ? "on" : ""}`} aria-pressed={s.withItems} onClick={() => set({ withItems: !s.withItems })}>
+            {s.withItems ? "✓ " : ""}Incluir el desglose por plato
           </button>
         </div>
+        {result.grand > 0 && !result.complete && (
+          <div style={{ fontSize: 11, color: "#b45309", marginBottom: 8 }}>
+            {over ? `Los platos suman ${money(-result.remaining)} más que el subtotal.` : result.remaining > 0 ? `Todavía faltan ${money(result.remaining)} por asignar.` : "Hay platos sin asignar."} Puedes compartir igual, pero las partes no sumarán el total.
+          </div>
+        )}
         <div className="sp-row">
-          <button className="btn btn-p" style={{ flex: 1 }} onClick={share} disabled={!hasAny}>Compartir</button>
-          <button className="btn btn-g" style={{ flex: 1 }} onClick={copy} disabled={!hasAny}>Copiar</button>
+          <button className="btn btn-p" style={{ flex: 1 }} onClick={share} disabled={!(result.grand > 0)}>Compartir</button>
+          <button className="btn btn-g" style={{ flex: 1 }} onClick={copy} disabled={!(result.grand > 0)}>Copiar</button>
         </div>
       </div>
 
