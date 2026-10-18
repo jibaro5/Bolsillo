@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import Budget from "./Budget.jsx";
 import Dashboard, { BestCardWidget } from "./Dashboard.jsx";
+import Split from "./Split.jsx";
 
 const SCRIPT_URL = "/api/sheet";
 const CLOSE_DAY = 20;
@@ -1426,6 +1427,7 @@ function App() {
     { id:"medeben", icon:"🤝", label:"Me deben", badge: meDeben.length },
     { id:"recurring", icon:"📅", label:"Fijos" },
     { id:"budget", icon:"💰", label:"Presupuesto" },
+    { id:"split", icon:"🧾", label:"Dividir cuenta" },
     { id:"summary", icon:"📊", label:"Resumen" },
   ];
   const goTo = id => { setTab(id); setMenuOpen(false); window.scrollTo(0,0); };
@@ -2478,6 +2480,10 @@ function App() {
               + agregar gasto fijo
             </button>
           </div>
+        )}
+
+        {tab==="split" && (
+          <Split suggestedNames={knownPeople} todayStr={today()} showToast={showToast} />
         )}
 
         {tab==="budget" && (
