@@ -15,7 +15,11 @@ const same = (a, b) => String(a || "").toLowerCase() === String(b || "").toLower
 
 async function overview() {
   const [users, creds, invites] = await Promise.all([listUsers({ fresh: true }), credentialSummary(), listInvites()]);
+  // The original shared key lives in Vercel (APPLE_PAY_KEY), not in the Sheet; it counts as the main administrator's.
+  const orig = process.env.APPLE_PAY_KEY;
+  const owner = users.find(u => u.rol === "admin" && u.estado === "activo")?.userLabel || "";
   return {
+    legacyKey: orig && owner ? { owner, hint: orig.slice(-4) } : null,
     users: users.map(u => {
       const c = creds[u.userLabel.toLowerCase()] || { devices: 0, password: false };
       return {

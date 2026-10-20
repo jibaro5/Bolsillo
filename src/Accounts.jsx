@@ -18,7 +18,7 @@ const left = iso => {
 };
 
 export default function Accounts({ fetcher, showToast, me }) {
-  const [data, setData] = useState({ users: [], invites: [] });
+  const [data, setData] = useState({ users: [], invites: [], legacyKey: null });
   const [state, setState] = useState("loading");
   const [busy, setBusy] = useState(false);
   const [inviteName, setInviteName] = useState("");
@@ -111,6 +111,8 @@ export default function Accounts({ fetcher, showToast, me }) {
       {data.users.map(u => {
         const self = me && u.userLabel.toLowerCase() === me.userLabel.toLowerCase();
         const blocked = u.estado !== "activo";
+        // Their Shortcut already works with the original key (kept in Vercel): nothing to create.
+        const hasOriginal = !u.appleKey && data.legacyKey && data.legacyKey.owner.toLowerCase() === u.userLabel.toLowerCase();
         return (
           <div key={u.userLabel} className="ac-card" style={blocked ? { opacity: 0.8 } : undefined}>
             <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap" }}>
@@ -122,16 +124,17 @@ export default function Accounts({ fetcher, showToast, me }) {
             <div className="ac-meta">
               Face ID: {u.devices} dispositivo{u.devices !== 1 ? "s" : ""} · Contraseña: {u.password ? "sí" : "no"} · Último acceso: {rel(u.ultimoAcceso)}
             </div>
-            <div className="ac-meta">Apple Pay: {u.appleKey ? `clave personal ••••${u.appleKey.hint}` : (self ? "clave original del atajo" : "sin clave")}</div>
+            <div className="ac-meta">Apple Pay: {u.appleKey ? `clave personal ••••${u.appleKey.hint}` : hasOriginal ? `clave del atajo ••••${data.legacyKey.hint} ✓` : "sin clave"}</div>
+            {hasOriginal && <div className="ac-meta" style={{ color: "#94a3b8" }}>Es la que ya tienes en tu atajo; no hace falta crear otra.</div>}
 
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
-              <button className="btn btn-g btn-sm" disabled={busy || blocked} onClick={() => createKey(u.userLabel)}>{u.appleKey ? "Nueva clave Apple Pay" : "Crear clave Apple Pay"}</button>
+            {(!hasOriginal || u.appleKey || !self) && <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+              {!hasOriginal && <button className="btn btn-g btn-sm" disabled={busy || blocked} onClick={() => createKey(u.userLabel)}>{u.appleKey ? "Nueva clave Apple Pay" : "Crear clave Apple Pay"}</button>}
               {u.appleKey && <button className="btn btn-g btn-sm" disabled={busy} onClick={() => setConfirm({ action: "apple-key-revoke", userLabel: u.userLabel, done: "Clave revocada", text: `La clave de Apple Pay de ${u.userLabel} dejará de funcionar de inmediato.`, button: "Revocar clave" })}>Revocar clave</button>}
               {!self && (blocked
                 ? <button className="btn btn-g btn-sm" disabled={busy} onClick={() => act("user-unblock", { userLabel: u.userLabel }, "Desbloqueado")}>Desbloquear</button>
                 : <button className="btn btn-amber btn-sm" disabled={busy} onClick={() => setConfirm({ action: "user-block", userLabel: u.userLabel, done: "Bloqueado", text: `${u.userLabel} perderá el acceso en menos de un minuto, aunque tenga la sesión abierta. Podrás desbloquearla después.`, button: "Bloquear" })}>Bloquear</button>)}
               {!self && <button className="btn btn-d btn-sm" disabled={busy} onClick={() => setConfirm({ action: "user-delete", userLabel: u.userLabel, done: "Cuenta eliminada", text: `Se borran el Face ID, la contraseña y la clave de Apple Pay de ${u.userLabel}. Sus gastos ya registrados se quedan. Para que vuelva a entrar necesitará una invitación nueva.`, button: "Eliminar cuenta" })}>Eliminar</button>}
-            </div>
+            </div>}
           </div>
         );
       })}
