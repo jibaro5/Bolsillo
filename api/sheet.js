@@ -31,7 +31,7 @@ function serialToDateStr(serial) {
 // ---- shared helpers for any "expenses"-shaped tab (Credit Card / Debito) ----
 
 async function readExpenses(sheetName) {
-  const range = encodeURIComponent(`${sheetName}!A1:H`);
+  const range = encodeURIComponent(`${sheetName}!A1:I`);
   const data = await sheetsFetch(`/values/${range}?valueRenderOption=UNFORMATTED_VALUE`);
   const rows = data.values || [];
   let headerRow = -1;
@@ -59,24 +59,30 @@ async function readExpenses(sheetName) {
         owed: String(owed).replace(/[$,]/g,"").trim(),
         added: String(row[5]??"").trim().toUpperCase() === "SI",
         paid: String(row[6]??"").trim().toUpperCase() === "SI",
+        registradoPor: String(row[8]??"").trim(),
       });
     }
   }
   return expenses;
 }
 
-async function appendExpense(sheetName, p) {
-  const headerCheck = await sheetsFetch(`/values/${encodeURIComponent(`${sheetName}!A1`)}`);
-  const hasHeader = headerCheck.values && String(headerCheck.values[0]?.[0]||"").toLowerCase().indexOf("descripci") > -1;
+async function appendExpense(sheetName, p, me = "") {
+  const headerCheck = await sheetsFetch(`/values/${encodeURIComponent(`${sheetName}!A1:I1`)}`);
+  const head = headerCheck.values?.[0] || [];
+  const hasHeader = String(head[0]||"").toLowerCase().indexOf("descripci") > -1;
   if (!hasHeader) {
     await sheetsFetch(`/values/${encodeURIComponent(`${sheetName}!A1`)}?valueInputOption=USER_ENTERED`, {
       method: "PUT",
-      body: JSON.stringify({ values: [["Descripción","Monto","Fecha","Categoría","Me deben","Ingresado","Me pagaron"]] }),
+      body: JSON.stringify({ values: [["Descripción","Monto","Fecha","Categoría","Me deben","Ingresado","Me pagaron","Notas","Registró"]] }),
     });
+  } else if (!head[8]) {
+    // Older tabs have no heading for the "who registered it" column yet.
+    await sheetsFetch(`/values/${encodeURIComponent(`${sheetName}!I1`)}?valueInputOption=USER_ENTERED`, { method: "PUT", body: JSON.stringify({ values: [["Registró"]] }) });
   }
-  const result = await sheetsFetch(`/values/${encodeURIComponent(`${sheetName}!A1:G1`)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
+  const who = String(p.registradoPor || me || "").trim().slice(0, 40);
+  const result = await sheetsFetch(`/values/${encodeURIComponent(`${sheetName}!A1:I1`)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
     method: "POST",
-    body: JSON.stringify({ values: [[p.desc, p.amount, p.date, p.category||"", p.owed||"", "NO", "NO"]] }),
+    body: JSON.stringify({ values: [[p.desc, p.amount, p.date, p.category||"", p.owed||"", "NO", "NO", "", who]] }),
   });
   return { id: rowFromUpdatedRange(result.updates?.updatedRange) };
 }
@@ -172,7 +178,8 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") { res.status(200).end(); return; }
-  if (!requireAuth(req, res)) return;
+  const me = await requireAuth(req, res);
+  if (!me) return;
 
   try {
     let action, body;
@@ -186,13 +193,13 @@ export default async function handler(req, res) {
 
     let result = {};
     if (action === "read") result = { expenses: await readExpenses(SHEET_NAMES.credit) };
-    else if (action === "append") result = await appendExpense(SHEET_NAMES.credit, body);
+    else if (action === "append") result = await appendExpense(SHEET_NAMES.credit, body, me);
     else if (action === "edit") { await editExpense(SHEET_NAMES.credit, body); result = { ok:true }; }
     else if (action === "update") { await updateExpenseStatus(SHEET_NAMES.credit, body); result = { ok:true }; }
     else if (action === "delete") { await deleteRow(SHEET_NAMES.credit, body); result = { ok:true }; }
 
     else if (action === "debito-read") result = { expenses: await readExpenses(SHEET_NAMES.debit) };
-    else if (action === "debito-append") result = await appendExpense(SHEET_NAMES.debit, body);
+    else if (action === "debito-append") result = await appendExpense(SHEET_NAMES.debit, body, me);
     else if (action === "debito-edit") { await editExpense(SHEET_NAMES.debit, body); result = { ok:true }; }
     else if (action === "debito-update") { await updateExpenseStatus(SHEET_NAMES.debit, body); result = { ok:true }; }
     else if (action === "debito-delete") { await deleteRow(SHEET_NAMES.debit, body); result = { ok:true }; }
@@ -215,7 +222,7 @@ export default async function handler(req, res) {
     else if (action === "card-append") {
       const card = await getCard(body.cardId);
       if (!card) return res.status(404).json({ error: "card_not_found" });
-      result = await appendExpense(card.sheetTab, body);
+      result = await appendExpense(card.sheetTab, body, me);
     }
     else if (action === "card-edit") {
       const card = await getCard(body.cardId);

@@ -59,7 +59,7 @@ async function state() {
     inbox: inbox.map(r => ({
       txId: r.txId, accountId: r.accountId, date: r.date, amount: Number(r.amount), name: r.name, category: r.category,
       status: r.status, pending: String(r.pending).toUpperCase() === "SI",
-      prevAmount: r.prevAmount === "" ? null : Number(r.prevAmount), ajuste: r.ajuste, transfer: r.tipo === "transferencia", applepay: r.tipo === "applepay",
+      prevAmount: r.prevAmount === "" ? null : Number(r.prevAmount), ajuste: r.ajuste, transfer: r.tipo === "transferencia", applepay: r.tipo === "applepay", usuario: r.usuario || "",
     })),
   };
 }
@@ -69,7 +69,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") { res.status(200).end(); return; }
-  const userLabel = requireAuth(req, res);
+  const userLabel = await requireAuth(req, res);
   if (!userLabel) return;
 
   try {

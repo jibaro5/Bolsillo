@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "crypto";
 import { listCards } from "../lib/cardsStore.js";
 import { addApplePayRow, logApplePay } from "../lib/plaidStore.js";
+import { userForApplePayKey, listUsers } from "../lib/usersStore.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -42,14 +43,24 @@ function resolveCard(cards, ...hints) {
   return null;
 }
 
+// Whose Shortcut this is. Each person has a personal key (made in the Cuentas panel); the
+// original shared key (APPLE_PAY_KEY) still works and counts as the main administrator's.
+async function whoseKey(key) {
+  const person = await userForApplePayKey(key);
+  if (person) return person.userLabel;
+  const expected = process.env.APPLE_PAY_KEY;
+  if (expected && safeEqual(key, expected)) {
+    const users = await listUsers().catch(() => []);
+    return process.env.APPLE_PAY_USER || users.find(u => u.rol === "admin" && u.estado === "activo")?.userLabel || "Omar";
+  }
+  return null;
+}
+
 // Today's date where the user lives, unless the Shortcut sends its own.
 const localDate = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Puerto_Rico" });
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
-  const expected = process.env.APPLE_PAY_KEY;
-  if (!expected) return res.status(503).json({ error: "applepay_not_configured" });
-
   let body = {};
   const seen = () => ({
     merchant: String(body.merchant ?? body.Merchant ?? "").slice(0, 120),
@@ -67,7 +78,8 @@ export default async function handler(req, res) {
   try {
     body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
     const key = req.headers["x-bolsillo-key"] || body.key;
-    if (!safeEqual(key, expected)) return reply(401, "unauthorized", { error: "unauthorized" });
+    const who = await whoseKey(key);
+    if (!who) return reply(401, "unauthorized", { error: "unauthorized" });
 
     const name = String(body.merchant ?? body.Merchant ?? "").trim().slice(0, 120);
     const amount = parseAmount(body.amount ?? body.Amount);
@@ -78,7 +90,7 @@ export default async function handler(req, res) {
     if (!cardId) return reply(400, "unknown_card", { error: "unknown_card", cards: cards.map(c => c.id) });
 
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || "")) ? body.date : localDate();
-    const result = await addApplePayRow({ cardId, name, amount, date });
+    const result = await addApplePayRow({ cardId, name, amount, date, usuario: who });
     return reply(200, result.duplicate ? "duplicate" : "ok", { ok: true, id: result.id, duplicate: result.duplicate });
   } catch (err) {
     return reply(500, "error: " + String(err.message).slice(0, 80), { error: err.message });

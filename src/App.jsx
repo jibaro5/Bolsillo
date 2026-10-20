@@ -2,8 +2,11 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import Budget from "./Budget.jsx";
 import Dashboard, { BestCardWidget, GoLink } from "./Dashboard.jsx";
 import Split from "./Split.jsx";
+import Accounts from "./Accounts.jsx";
 
 const SCRIPT_URL = "/api/sheet";
+// Expenses saved before "who registered it" existed have no name; they were all entered by the owner.
+const LEGACY_OWNER = "Omar";
 const CLOSE_DAY = 20;
 const DUE_DAY = 17;
 
@@ -232,7 +235,7 @@ function makeExpenseApi(actionPrefix) {
     const res = await fetchWithTimeout(SCRIPT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action:`${actionPrefix}append`, desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:buildOwedStr(expense) }),
+      body: JSON.stringify({ action:`${actionPrefix}append`, desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:buildOwedStr(expense), registradoPor:expense.by||"" }),
     });
     if (!res.ok) throw new Error(`${actionPrefix}append failed: ${res.status}`);
     return parseJsonSafe(res);
@@ -280,7 +283,7 @@ function makeCardExpenseApi(cardId) {
     const res = await fetchWithTimeout(SCRIPT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action:"card-append", cardId, desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:buildOwedStr(expense) }),
+      body: JSON.stringify({ action:"card-append", cardId, desc:expense.desc, amount:expense.amount, date:expense.date, category:expense.category||"", owed:buildOwedStr(expense), registradoPor:expense.by||"" }),
     });
     if (!res.ok) throw new Error(`card-append failed: ${res.status}`);
     return parseJsonSafe(res);
@@ -508,13 +511,14 @@ function normalizeExpenseRows(rows, account) {
         owed: parseOwedStr(e.owed),
         added: account === "debit" ? true : (e.added === true || String(e.added).toUpperCase().trim() === "SI"),
         paid: e.paid === true || String(e.paid).toUpperCase().trim() === "SI",
+        by: String(e.registradoPor||"").trim(),
       });
     } catch(err) { console.warn("Skipping row", i, err); }
   }
   return normalized;
 }
 
-const EMPTY_FORM = { desc:"", amount:"", date:today(), category:"", note:"", owed:[] };
+const EMPTY_FORM = { desc:"", amount:"", date:today(), category:"", note:"", owed:[], by:"" };
 const EMPTY_REC = { name:"", amount:"", day:"" };
 
 function App() {
@@ -551,6 +555,7 @@ function App() {
   const [formAccount, setFormAccount] = useState("");
   const [tab, setTab] = useState("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [me, setMe] = useState(null); // { userLabel, rol } from the server
   const [cards, setCards] = useState([]);
   const [rules, setRules] = useState([]);
   const [plaid, setPlaid] = useState(EMPTY_PLAID);
@@ -582,6 +587,7 @@ function App() {
   const plaidExchangingRef = useRef(false);
 
   useEffect(() => { loadAll(); }, []);
+
 
   // Once cards load, default both the hero and the "Nuevo gasto" toggle to
   // the first one — but only if nothing more specific has been picked yet.
@@ -616,6 +622,8 @@ function App() {
 
   async function loadAll() {
     setLoading(true); setStatus("idle");
+    // Who am I and what can I do (the server also logs out anyone who's been blocked: a 401 here does it).
+    fetchWithTimeout("/api/auth?action=me").then(r => r.ok ? r.json() : null).then(d => { if (d?.userLabel) setMe(d); }).catch(() => {});
     try {
       // Cards need to be known before we can fire one read per card, so this
       // one goes first; everything else (debito, recurring, and each card's
@@ -728,6 +736,7 @@ function App() {
       owed:convertedOwed,
       added: isEdit ? (prevExpense?.added??false) : account === "debit",
       paid: isEdit ? (prevExpense?.paid??false) : false,
+      by: isEdit ? (prevExpense?.by||"") : (form.by || me?.userLabel || ""),
     };
     const snapshot = expenses;
     const importId = importTxId;
@@ -1155,7 +1164,7 @@ function App() {
     setFormAccount(cardId || cards[0]?.id || "debit");
     // Apple Pay payments arrive without a category; reuse the one last used for the same name.
     const category = row.category || categoryByName[row.name.trim().toLowerCase()] || "";
-    setForm({ ...EMPTY_FORM, desc: row.name, amount: String(row.amount), date: row.date, category });
+    setForm({ ...EMPTY_FORM, desc: row.name, amount: String(row.amount), date: row.date, category, by: row.usuario || "" });
     setShowOwed(false);
     setShowForm(true);
   }
@@ -1396,6 +1405,7 @@ function App() {
           <div className="tx-title">{ex.desc}</div>
           <div className="tx-sub">
             <span>{ex.date}</span>
+            <span className="who-badge">{ex.by || LEGACY_OWNER}</span>
             {showSource && <span className="src-badge">{cardName(ex.account)}</span>}
             {inCycle && !showSource && <span className="badge badge-blue" style={{fontSize:9}}>ciclo actual</span>}
             {hasOwed && !ex.paid && <span className="badge badge-amber">{(ex.owed||[]).map(p=>p.name||"Alguien").join(", ")} debe {fmt(owedAmt)}</span>}
@@ -1429,6 +1439,7 @@ function App() {
     { id:"budget", icon:"💰", label:"Presupuesto" },
     { id:"split", icon:"🧾", label:"Dividir cuenta" },
     { id:"summary", icon:"📊", label:"Resumen" },
+    ...(me?.rol === "admin" ? [{ id:"accounts", icon:"👥", label:"Cuentas" }] : []),
   ];
   const goTo = id => { setTab(id); setMenuOpen(false); window.scrollTo(0,0); };
   // Jump to a section, and to a spot inside it once it has rendered.
@@ -1664,6 +1675,7 @@ function App() {
         .chart-legend .sw{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:4px;}
 
         /* ---- bottom tab bar ---- */
+        .who-badge{font-size:10px;font-weight:700;color:#475569;background:#f1f5f9;border-radius:99px;padding:1px 8px;}
         .menu-btn{width:36px;height:36px;border-radius:10px;border:1px solid #e2e8f0;background:#fff;font-size:18px;cursor:pointer;color:#334155;font-family:inherit;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
         .fab{position:fixed;right:18px;bottom:calc(20px + env(safe-area-inset-bottom));width:56px;height:56px;border-radius:18px;border:none;cursor:pointer;background:linear-gradient(135deg,#0f4c81,#1e6ab0);color:#fff;font-size:28px;font-weight:400;line-height:1;box-shadow:0 10px 22px -6px rgba(15,76,129,.55);z-index:150;display:flex;align-items:center;justify-content:center;font-family:inherit;}
         .fab:active{transform:scale(.95);}
@@ -2493,6 +2505,10 @@ function App() {
           </div>
         )}
 
+        {tab==="accounts" && me?.rol === "admin" && (
+          <Accounts fetcher={fetchWithTimeout} showToast={showToast} me={me} />
+        )}
+
         {tab==="split" && (
           <Split suggestedNames={knownPeople} todayStr={today()} showToast={showToast} />
         )}
@@ -2722,7 +2738,7 @@ function LoginGate({ onLogin }) {
       const { token, userLabel } = await authApi("passkey-login-verify", { challengeToken, assertionResponse });
       onLogin(token, userLabel, intent);
     } catch (err) {
-      setError(err.name === "NotAllowedError" ? "Cancelado o no reconocido" : (err.message || "No se pudo entrar"));
+      setError(err.name === "NotAllowedError" ? "Cancelado o no reconocido" : (err.message === "blocked" || err.message === "no_access") ? "Tu cuenta está bloqueada. Habla con quien administra Bolsillo." : (err.message || "No se pudo entrar"));
     } finally { setBusy(false); }
   }
 
@@ -2732,7 +2748,7 @@ function LoginGate({ onLogin }) {
     try {
       const { token, userLabel } = await authApi("password-login", { userLabel: pwUser.trim(), password: pwPass });
       onLogin(token, userLabel);
-    } catch (err) { setError(err.message === "invalid_credentials" ? "Nombre o contraseña incorrectos" : (err.message || "No se pudo entrar")); }
+    } catch (err) { setError(err.message === "invalid_credentials" ? "Nombre o contraseña incorrectos" : (err.message === "blocked" || err.message === "no_access") ? "Tu cuenta está bloqueada. Habla con quien administra Bolsillo." : (err.message || "No se pudo entrar")); }
     finally { setBusy(false); }
   }
 
@@ -2745,7 +2761,7 @@ function LoginGate({ onLogin }) {
       const { token, userLabel } = await authApi("passkey-register-verify", { challengeToken, attestationResponse });
       onLogin(token, userLabel);
     } catch (err) {
-      setError(err.name === "NotAllowedError" ? "Cancelado" : (err.message === "invalid_setup_code" ? "Código incorrecto" : (err.message || "No se pudo registrar")));
+      setError(err.name === "NotAllowedError" ? "Cancelado" : (err.message === "invalid_setup_code" ? "Código incorrecto, usado o vencido" : err.message === "blocked" ? "Esta cuenta está bloqueada" : (err.message || "No se pudo registrar")));
     } finally { setBusy(false); }
   }
 
@@ -2756,7 +2772,7 @@ function LoginGate({ onLogin }) {
       const { token, userLabel } = await authApi("password-set", { setupCode, userLabel: setupName.trim(), password: setupPass });
       onLogin(token, userLabel);
     } catch (err) {
-      setError(err.message === "invalid_setup_code" ? "Código incorrecto" : (err.message || "No se pudo guardar"));
+      setError(err.message === "invalid_setup_code" ? "Código incorrecto, usado o vencido" : err.message === "blocked" ? "Esta cuenta está bloqueada" : (err.message || "No se pudo guardar"));
     } finally { setBusy(false); }
   }
 
@@ -2781,7 +2797,7 @@ function LoginGate({ onLogin }) {
               Usar contraseña
             </button>
             {error && <p className="lg-error">{error}</p>}
-            <button className="lg-link" onClick={() => { setMode("setup"); setError(""); }}>Configurar este dispositivo</button>
+            <button className="lg-link" onClick={() => { setMode("setup"); setError(""); }}>Tengo una invitación</button>
           </>
         )}
         {mode === "password" && (
@@ -2796,7 +2812,8 @@ function LoginGate({ onLogin }) {
         {mode === "setup" && (
           <div>
             <input className="lg-input" placeholder="Tu nombre" value={setupName} onChange={e=>setSetupName(e.target.value)} />
-            <input className="lg-input" placeholder="Código de configuración" value={setupCode} onChange={e=>setSetupCode(e.target.value)} />
+            <input className="lg-input" placeholder="Código de invitación" value={setupCode} onChange={e=>setSetupCode(e.target.value)} autoCapitalize="characters" autoCorrect="off" />
+            <p style={{fontSize:12,color:"#64748b",margin:"0 0 10px",lineHeight:1.4}}>El código te lo da quien administra Bolsillo. Sirve una sola vez.</p>
             {passkeySupported && (
               <button className="lg-btn lg-btn-p" disabled={busy || !setupName.trim() || !setupCode} onClick={handleSetupPasskey}>
                 {busy ? "..." : "🔐 Registrar Face ID / Touch ID"}

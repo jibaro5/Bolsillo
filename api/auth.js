@@ -6,7 +6,8 @@ import {
   generateAuthenticationOptions,
   verifyAuthenticationResponse,
 } from "@simplewebauthn/server";
-import { signSession, signChallenge, verifyChallenge } from "../lib/session.js";
+import { signSession, signChallenge, verifyChallenge, requireUser } from "../lib/session.js";
+import { findInvite, findInviteByHash, useInvite, ensureUser, getUser, listUsers, checkAccess, touchAccess } from "../lib/usersStore.js";
 import {
   listUserLabels,
   findCredentialById,
@@ -37,10 +38,36 @@ function checkSetupCode(code) {
   return expected && safeEqual(code, expected);
 }
 
+// Who may register a credential right now, and as whom:
+//  1. a single-use invitation (the name comes from the invitation), or
+//  2. the setup code, but only to (re)register an ADMINISTRATOR (or the very first user
+//     while no one has been set up). A stranger who gets hold of the setup code can't create members.
+async function registrationTarget(body) {
+  const code = body.inviteCode ?? body.setupCode;
+  const invite = await findInvite(code);
+  if (invite) return { ok: true, userLabel: invite.userLabel, rol: invite.rol, ih: invite.hash };
+  if (checkSetupCode(body.setupCode)) {
+    const label = String(body.userLabel || "").trim();
+    if (!label) return { ok: false, error: "missing_userLabel" };
+    const users = await listUsers({ fresh: true });
+    if (!users.length) return { ok: true, userLabel: label, rol: "admin" };
+    const u = users.find(x => x.userLabel.toLowerCase() === label.toLowerCase());
+    if (u && u.rol === "admin" && u.estado === "activo") return { ok: true, userLabel: u.userLabel, rol: "admin" };
+  }
+  return { ok: false, error: "invalid_setup_code" };
+}
+
+// A blocked person can't register new devices.
+async function notBlocked(userLabel) {
+  const u = await getUser(userLabel, { fresh: true });
+  return !(u && u.estado !== "activo");
+}
+
 async function passkeyRegisterOptions(req, res, body) {
-  if (!checkSetupCode(body.setupCode)) return res.status(401).json({ error: "invalid_setup_code" });
-  const userLabel = String(body.userLabel || "").trim();
-  if (!userLabel) return res.status(400).json({ error: "missing_userLabel" });
+  const target = await registrationTarget(body);
+  if (!target.ok) return res.status(target.error === "missing_userLabel" ? 400 : 401).json({ error: target.error });
+  const userLabel = target.userLabel;
+  if (!(await notBlocked(userLabel))) return res.status(403).json({ error: "blocked" });
   const { rpID, rpName } = rpInfo(req);
   const options = await generateRegistrationOptions({
     rpName, rpID,
@@ -50,7 +77,7 @@ async function passkeyRegisterOptions(req, res, body) {
     attestationType: "none",
     authenticatorSelection: { residentKey: "required", userVerification: "required" },
   });
-  const challengeToken = signChallenge({ purpose: "register", challenge: options.challenge, userLabel });
+  const challengeToken = signChallenge({ purpose: "register", challenge: options.challenge, userLabel, rol: target.rol, ih: target.ih || "" });
   res.status(200).json({ options, challengeToken });
 }
 
@@ -68,15 +95,24 @@ async function passkeyRegisterVerify(req, res, body) {
     return res.status(401).json({ error: "verification_failed" });
   }
   const { credential } = verification.registrationInfo;
+  const { userLabel, rol, ih } = check.payload;
+  let invite = null;
+  if (ih) {
+    invite = await findInviteByHash(ih);
+    if (!invite) return res.status(401).json({ error: "invalid_setup_code" });   // used or expired in between
+  }
+  if (!(await notBlocked(userLabel))) return res.status(403).json({ error: "blocked" });
   await addCredential({
-    userLabel: check.payload.userLabel,
+    userLabel,
     credentialId: credential.id,
     publicKey: Buffer.from(credential.publicKey).toString("base64"),
     counter: credential.counter,
     transports: credential.transports,
   });
-  const token = signSession(check.payload.userLabel);
-  res.status(200).json({ token, userLabel: check.payload.userLabel });
+  await ensureUser(userLabel, rol || "miembro");
+  if (invite) await useInvite(invite);
+  await touchAccess(userLabel);
+  res.status(200).json({ token: signSession(userLabel), userLabel, rol: rol || "miembro" });
 }
 
 async function passkeyLoginOptions(req, res) {
@@ -106,20 +142,28 @@ async function passkeyLoginVerify(req, res, body) {
     },
   });
   if (!verification.verified) return res.status(401).json({ error: "verification_failed" });
+  const access = await checkAccess(stored.userLabel);
+  if (!access.ok) return res.status(403).json({ error: access.reason === "blocked" ? "blocked" : "no_access" });
   await updateCredentialCounter(stored.rowNum, verification.authenticationInfo.newCounter);
-  const token = signSession(stored.userLabel);
-  res.status(200).json({ token, userLabel: stored.userLabel });
+  await touchAccess(stored.userLabel);
+  res.status(200).json({ token: signSession(stored.userLabel), userLabel: stored.userLabel, rol: access.rol });
 }
 
 async function passwordSet(req, res, body) {
-  if (!checkSetupCode(body.setupCode)) return res.status(401).json({ error: "invalid_setup_code" });
-  const userLabel = String(body.userLabel || "").trim();
+  const target = await registrationTarget(body);
+  if (!target.ok) return res.status(target.error === "missing_userLabel" ? 400 : 401).json({ error: target.error });
   const password = String(body.password || "");
-  if (!userLabel || password.length < 6) return res.status(400).json({ error: "invalid_input" });
+  if (password.length < 6) return res.status(400).json({ error: "invalid_input" });
+  const userLabel = target.userLabel;
+  if (!(await notBlocked(userLabel))) return res.status(403).json({ error: "blocked" });
+  const invite = target.ih ? await findInviteByHash(target.ih) : null;
+  if (target.ih && !invite) return res.status(401).json({ error: "invalid_setup_code" });
   const hash = await bcrypt.hash(password, 10);
   await setPasswordHash(userLabel, hash);
-  const token = signSession(userLabel);
-  res.status(200).json({ token, userLabel });
+  await ensureUser(userLabel, target.rol || "miembro");
+  if (invite) await useInvite(invite);
+  await touchAccess(userLabel);
+  res.status(200).json({ token: signSession(userLabel), userLabel, rol: target.rol || "miembro" });
 }
 
 async function passwordLogin(req, res, body) {
@@ -128,19 +172,29 @@ async function passwordLogin(req, res, body) {
   if (!row || !row.passwordHash) return res.status(401).json({ error: "invalid_credentials" });
   const match = await bcrypt.compare(String(body.password || ""), row.passwordHash);
   if (!match) return res.status(401).json({ error: "invalid_credentials" });
-  const token = signSession(userLabel);
-  res.status(200).json({ token, userLabel });
+  const access = await checkAccess(row.userLabel);
+  if (!access.ok) return res.status(403).json({ error: access.reason === "blocked" ? "blocked" : "no_access" });
+  await touchAccess(row.userLabel);
+  res.status(200).json({ token: signSession(row.userLabel), userLabel: row.userLabel, rol: access.rol });
 }
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") { res.status(200).end(); return; }
 
   try {
     if (req.method === "GET" && req.query.action === "users") {
-      return res.status(200).json({ users: await listUserLabels() });
+      // Only people who can actually sign in (a blocked person's name isn't offered).
+      const labels = await listUserLabels();
+      const known = await listUsers();
+      return res.status(200).json({ users: known.length ? labels.filter(l => known.some(u => u.userLabel.toLowerCase() === l.toLowerCase() && u.estado === "activo")) : labels });
+    }
+    if (req.method === "GET" && req.query.action === "me") {
+      const u = await requireUser(req, res);
+      if (!u) return;
+      return res.status(200).json({ userLabel: u.userLabel, rol: u.rol });
     }
     const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
     const action = body.action;
