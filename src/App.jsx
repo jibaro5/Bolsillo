@@ -3,6 +3,7 @@ import Budget from "./Budget.jsx";
 import Dashboard, { BestCardWidget, GoLink } from "./Dashboard.jsx";
 import Split from "./Split.jsx";
 import Accounts from "./Accounts.jsx";
+import { isHidden, setHidden, MASK } from "./privacy.js";
 
 const SCRIPT_URL = "/api/sheet";
 // Expenses saved before "who registered it" existed have no name; they were all entered by the owner.
@@ -19,10 +20,13 @@ function localDateStr(d) {
   return `${y}-${m}-${day}`;
 }
 function today() { return localDateStr(new Date()); }
-function fmt(n) {
+// Real amount; messages that get shared always use this one.
+function fmtReal(n) {
   const num = parseFloat(n) || 0;
   return new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(num);
 }
+// What is drawn on screen: the same, or $xxx while "Ocultar números" is on.
+function fmt(n) { return isHidden() ? MASK : fmtReal(n); }
 function parseAmt(s) {
   if (s === null || s === undefined || s === "") return 0;
   const cleaned = String(s).replace(/[$,\s]/g,"");
@@ -107,11 +111,11 @@ function buildShareText(items) {
     g.items.forEach(ex => {
       const owedAmt = owedForExp(ex);
       const mine = ex.amount - owedAmt;
-      lines.push(`${ex.desc} - ${fmt(ex.amount)}`);
+      lines.push(`${ex.desc} - ${fmtReal(ex.amount)}`);
       (ex.owed||[]).forEach(p => {
-        lines.push(`  ${p.name||"Alguien"} debe: ${fmt(parseFloat(p.value)||0)}`);
+        lines.push(`  ${p.name||"Alguien"} debe: ${fmtReal(parseFloat(p.value)||0)}`);
       });
-      lines.push(`  Omar: ${fmt(mine)}`);
+      lines.push(`  Omar: ${fmtReal(mine)}`);
       lines.push("");
     });
   });
@@ -122,7 +126,7 @@ function buildShareText(items) {
       personTotals[name] = (personTotals[name]||0) + (parseFloat(p.value)||0);
     });
   });
-  const totalsLine = Object.entries(personTotals).map(([name,amt])=>`${name}: ${fmt(amt)}`).join(", ");
+  const totalsLine = Object.entries(personTotals).map(([name,amt])=>`${name}: ${fmtReal(amt)}`).join(", ");
   lines.push("*Total*");
   lines.push(totalsLine);
   lines.push("");
@@ -556,6 +560,7 @@ function App() {
   const [tab, setTab] = useState("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
   const [me, setMe] = useState(null); // { userLabel, rol } from the server
+  const [hideNums, setHideNums] = useState(isHidden());
   const [cards, setCards] = useState([]);
   const [rules, setRules] = useState([]);
   const [plaid, setPlaid] = useState(EMPTY_PLAID);
@@ -1675,6 +1680,7 @@ function App() {
         .chart-legend .sw{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:4px;}
 
         /* ---- bottom tab bar ---- */
+        .hide-numbers input[type=number]{filter:blur(6px);}
         .who-badge{font-size:10px;font-weight:700;color:#475569;background:#f1f5f9;border-radius:99px;padding:1px 8px;}
         .menu-btn{width:36px;height:36px;border-radius:10px;border:1px solid #e2e8f0;background:#fff;font-size:18px;cursor:pointer;color:#334155;font-family:inherit;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
         .fab{position:fixed;right:18px;bottom:calc(20px + env(safe-area-inset-bottom));width:56px;height:56px;border-radius:18px;border:none;cursor:pointer;background:linear-gradient(135deg,#0f4c81,#1e6ab0);color:#fff;font-size:28px;font-weight:400;line-height:1;box-shadow:0 10px 22px -6px rgba(15,76,129,.55);z-index:150;display:flex;align-items:center;justify-content:center;font-family:inherit;}
@@ -1877,7 +1883,7 @@ function App() {
                         <div style={{fontSize:13,fontWeight:600}}>{c?.nombre||r.cardId} · {r.categoria} · {r.tasa}%</div>
                         <div style={{fontSize:11,color:"#94a3b8"}}>
                           {r.periodo === "trimestre" ? "Siempre · tope por trimestre" : r.periodo === "mes" ? "Siempre · tope por mes" : (r.fechaInicio || r.fechaFin ? `${r.fechaInicio||"..."} a ${r.fechaFin||"..."}` : "Permanente")}
-                          {r.tope ? ` · tope $${r.tope}${r.grupo ? ` compartido (${r.grupo})` : ""}` : ""}{r.requiereActivacion ? " · requiere activar" : ""}
+                          {r.tope ? ` · tope ${isHidden() ? MASK : "$"+r.tope}${r.grupo ? ` compartido (${r.grupo})` : ""}` : ""}{r.requiereActivacion ? " · requiere activar" : ""}
                         </div>
                       </div>
                       <button className="btn btn-g btn-sm" style={{padding:"6px 8px"}} onClick={()=>startEditRule(r)}>E</button>
@@ -2204,7 +2210,7 @@ function App() {
             </div>
             <div>
               <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700,letterSpacing:-.3,lineHeight:1}}>Bolsillo</div>
-              <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,fontWeight:600}}>{(NAV.find(n=>n.id===tab)?.label || "").toUpperCase()}</div>
+              <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,fontWeight:600}}>{(NAV.find(n=>n.id===tab)?.label || "").toUpperCase()}{hideNums ? " · NÚMEROS OCULTOS" : ""}</div>
             </div>
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -2665,6 +2671,9 @@ function App() {
               </button>
             ))}
             <div style={{borderTop:"1px solid #e2e8f0",margin:"14px 0 8px"}}></div>
+            <button className="drawer-item" onClick={()=>{ const v = !hideNums; setHidden(v); setHideNums(v); setMenuOpen(false); showToast(v ? "Números ocultos" : "Números visibles"); }}>
+              <span style={{fontSize:20,width:26,textAlign:"center"}}>{hideNums ? "👁️" : "🙈"}</span><span style={{flex:1,textAlign:"left"}}>{hideNums ? "Mostrar números" : "Ocultar números"}</span>
+            </button>
             <button className="drawer-item" onClick={()=>{setMenuOpen(false); setShowCardsModal(true);}}>
               <span style={{fontSize:20,width:26,textAlign:"center"}}>⚙️</span><span style={{flex:1,textAlign:"left"}}>Tarjetas y bancos</span>
             </button>

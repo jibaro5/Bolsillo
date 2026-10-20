@@ -1,9 +1,13 @@
 import { useState, useEffect, useMemo } from "react";
-import { computeSplit, buildMessage, money, toCents } from "./splitMath.js";
+import { computeSplit, buildMessage, money as moneyReal, toCents } from "./splitMath.js";
+import { isHidden, MASK, maskAmounts } from "./privacy.js";
 
 // "Dividir cuenta", step by step: 1 people, 2 subtotal and tax from the receipt,
 // 3 dishes (assigned to people, with what's left of the subtotal), 4 tip and
 // total, 5 message. Inspired by Plates by Splitwise. Math in splitMath.js.
+
+// On screen amounts follow "Ocultar números"; the message that is shared or copied always has the real ones.
+const money = c => (isHidden() ? MASK : moneyReal(c));
 
 const DRAFT_KEY = "bolsillo_split_draft_v2";
 const COLORS = ["#0f4c81", "#b45309", "#059669", "#7c3aed", "#db2777", "#0891b2", "#65a30d", "#dc2626", "#475569", "#ca8a04"];
@@ -307,7 +311,7 @@ export default function Split({ suggestedNames, me = "Omar", todayStr, showToast
         <input className="sp-in" style={{ width: "100%", marginBottom: 8 }} placeholder="Restaurante o motivo (ej. Texas Roadhouse)" value={s.merchant} onChange={e => set({ merchant: e.target.value })} aria-label="Restaurante o motivo" />
         <input className="sp-in" style={{ width: "100%", marginBottom: 10 }} type="date" value={s.date} onChange={e => set({ date: e.target.value })} aria-label="Fecha" />
         <div style={{ background: "#f8fafc", borderRadius: 10, padding: 12, fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap", color: "#334155" }}>
-          {result.grand > 0 ? message : "Agrega el subtotal y los platos para ver el mensaje."}
+          {result.grand > 0 ? maskAmounts(message) : "Agrega el subtotal y los platos para ver el mensaje."}
         </div>
         <div style={{ margin: "10px 0" }}>
           <button type="button" className={`sp-chip ${s.withItems ? "on" : ""}`} aria-pressed={s.withItems} onClick={() => set({ withItems: !s.withItems })}>
