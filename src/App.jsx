@@ -2706,21 +2706,40 @@ const LG_STYLES = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
   .lg-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f1f5f9;font-family:'DM Sans','Helvetica Neue',sans-serif;padding:20px;}
   .lg-wrap *{box-sizing:border-box;}
-  .lg-card{background:#fff;border-radius:20px;padding:32px 26px;width:100%;max-width:360px;box-shadow:0 1px 4px rgba(0,0,0,.06);text-align:center;}
-  .lg-title{font-size:22px;font-weight:700;color:#0f172a;margin-bottom:22px;}
+  .lg-col{width:100%;max-width:380px;}
+  .lg-card{background:#fff;border-radius:20px;padding:26px 22px 22px;width:100%;box-shadow:0 1px 4px rgba(0,0,0,.06);}
+  .lg-logo{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:20px;}
+  .lg-logo img{width:46px;height:46px;border-radius:12px;}
+  .lg-title{font-size:22px;font-weight:700;color:#0f172a;}
+  .lg-tabs{display:flex;background:#f1f5f9;border-radius:12px;padding:4px;gap:4px;margin-bottom:20px;}
+  .lg-tab{flex:1;border:none;background:transparent;font-family:inherit;font-size:14px;font-weight:600;color:#64748b;padding:10px 8px;border-radius:9px;cursor:pointer;}
+  .lg-tab.on{background:#fff;color:#0f172a;box-shadow:0 1px 4px rgba(0,0,0,.1);}
+  .lg-label{display:block;text-align:left;font-size:13px;font-weight:600;color:#334155;margin:0 0 6px;}
   .lg-btn{cursor:pointer;border:none;font-family:inherit;font-size:14px;border-radius:12px;padding:13px 16px;font-weight:600;width:100%;margin-bottom:10px;transition:all .15s;}
   .lg-btn:disabled{opacity:.5;cursor:default;}
   .lg-btn-p{background:#0f4c81;color:#fff;}
   .lg-btn-p:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 4px 12px rgba(15,76,129,.25);}
+  .lg-btn-d{background:#1e293b;color:#fff;}
   .lg-btn-g{background:#fff;color:#64748b;border:1.5px solid #e2e8f0;}
-  .lg-input{background:#fff;border:1.5px solid #e2e8f0;color:#0f172a;padding:12px 14px;border-radius:10px;font-family:inherit;font-size:14px;width:100%;margin-bottom:10px;outline:none;}
+  .lg-input{background:#fff;border:1.5px solid #e2e8f0;color:#0f172a;padding:12px 14px;border-radius:10px;font-family:inherit;font-size:14px;width:100%;margin-bottom:14px;outline:none;}
   .lg-input:focus{border-color:#0f4c81;}
-  .lg-link{background:none;border:none;color:#94a3b8;font-family:inherit;font-size:12.5px;cursor:pointer;margin-top:6px;text-decoration:underline;}
-  .lg-error{color:#dc2626;font-size:12.5px;margin:-2px 0 10px;}
+  .lg-code{font-family:ui-monospace,Menlo,monospace;letter-spacing:2px;text-transform:uppercase;}
+  .lg-or{display:flex;align-items:center;gap:10px;color:#94a3b8;font-size:12px;margin:6px 0 14px;}
+  .lg-or:before,.lg-or:after{content:"";flex:1;height:1px;background:#e2e8f0;}
+  .lg-link{display:block;margin:4px auto 0;background:none;border:none;color:#64748b;font-family:inherit;font-size:12.5px;cursor:pointer;text-decoration:underline;}
+  .lg-note{font-size:12px;color:#64748b;line-height:1.45;background:#f8fafc;border-radius:10px;padding:10px 12px;margin:10px 0 0;text-align:left;}
+  .lg-error{color:#dc2626;font-size:12.5px;margin:-4px 0 10px;text-align:left;}
+  .lg-install{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-top:14px;padding:13px 16px;border-radius:14px;border:1.5px solid #e2e8f0;background:rgba(255,255,255,.7);color:#334155;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;}
+  .lg-foot{text-align:center;font-size:12px;color:#94a3b8;margin:14px 0 0;}
 `;
 
+// Not installed yet? "Instalar app" uses the browser's own install prompt when it offers one
+// (Android / desktop Chrome); on iPhone there is none, so it explains the Share menu steps.
+const isStandalone = () => typeof window !== "undefined" && (window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true);
+const isIOS = () => typeof navigator !== "undefined" && /iphone|ipad|ipod/i.test(navigator.userAgent);
+
 function LoginGate({ onLogin }) {
-  const [mode, setMode] = useState("login"); // "login" | "password" | "setup"
+  const [tab, setTab] = useState("signin"); // "signin" | "create"
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [passkeySupported, setPasskeySupported] = useState(true);
@@ -2729,6 +2748,10 @@ function LoginGate({ onLogin }) {
   const [setupName, setSetupName] = useState("");
   const [setupCode, setSetupCode] = useState("");
   const [setupPass, setSetupPass] = useState("");
+  const [forgot, setForgot] = useState(false);
+  const [installEvt, setInstallEvt] = useState(null);
+  const [installHelp, setInstallHelp] = useState(false);
+  const [installed, setInstalled] = useState(isStandalone());
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.PublicKeyCredential) { setPasskeySupported(false); return; }
@@ -2737,6 +2760,29 @@ function LoginGate({ onLogin }) {
         .then(setPasskeySupported).catch(()=>setPasskeySupported(false));
     }
   }, []);
+
+  useEffect(() => {
+    const onPrompt = e => { e.preventDefault(); setInstallEvt(e); };
+    const onInstalled = () => { setInstalled(true); setInstallEvt(null); };
+    window.addEventListener("beforeinstallprompt", onPrompt);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => { window.removeEventListener("beforeinstallprompt", onPrompt); window.removeEventListener("appinstalled", onInstalled); };
+  }, []);
+
+  async function handleInstall() {
+    if (installEvt) {
+      installEvt.prompt();
+      try { await installEvt.userChoice; } catch { /* dismissed */ }
+      setInstallEvt(null);
+    } else setInstallHelp(h => !h);
+  }
+
+  const BLOCKED = "Tu cuenta está bloqueada. Habla con quien administra Bolsillo.";
+  const setupError = err => err.name === "NotAllowedError" ? "Cancelado"
+    : err.message === "invalid_setup_code" ? "Código incorrecto, usado o vencido"
+    : err.message === "blocked" ? "Esta cuenta está bloqueada"
+    : err.message === "missing_userLabel" ? "Escribe también tu nombre"
+    : (err.message || "No se pudo completar");
 
   async function handlePasskeyLogin(intent = "dashboard") {
     setBusy(true); setError("");
@@ -2747,7 +2793,7 @@ function LoginGate({ onLogin }) {
       const { token, userLabel } = await authApi("passkey-login-verify", { challengeToken, assertionResponse });
       onLogin(token, userLabel, intent);
     } catch (err) {
-      setError(err.name === "NotAllowedError" ? "Cancelado o no reconocido" : (err.message === "blocked" || err.message === "no_access") ? "Tu cuenta está bloqueada. Habla con quien administra Bolsillo." : (err.message || "No se pudo entrar"));
+      setError(err.name === "NotAllowedError" ? "Cancelado o no reconocido" : (err.message === "blocked" || err.message === "no_access") ? BLOCKED : (err.message || "No se pudo entrar"));
     } finally { setBusy(false); }
   }
 
@@ -2757,7 +2803,7 @@ function LoginGate({ onLogin }) {
     try {
       const { token, userLabel } = await authApi("password-login", { userLabel: pwUser.trim(), password: pwPass });
       onLogin(token, userLabel);
-    } catch (err) { setError(err.message === "invalid_credentials" ? "Nombre o contraseña incorrectos" : (err.message === "blocked" || err.message === "no_access") ? "Tu cuenta está bloqueada. Habla con quien administra Bolsillo." : (err.message || "No se pudo entrar")); }
+    } catch (err) { setError(err.message === "invalid_credentials" ? "Nombre o contraseña incorrectos" : (err.message === "blocked" || err.message === "no_access") ? BLOCKED : (err.message || "No se pudo entrar")); }
     finally { setBusy(false); }
   }
 
@@ -2765,79 +2811,104 @@ function LoginGate({ onLogin }) {
     setBusy(true); setError("");
     try {
       const { startRegistration } = await import("@simplewebauthn/browser");
-      const { options, challengeToken } = await authApi("passkey-register-options", { setupCode, userLabel: setupName.trim() });
+      const { options, challengeToken } = await authApi("passkey-register-options", { setupCode: setupCode.trim(), userLabel: setupName.trim() });
       const attestationResponse = await startRegistration({ optionsJSON: options });
       const { token, userLabel } = await authApi("passkey-register-verify", { challengeToken, attestationResponse });
       onLogin(token, userLabel);
-    } catch (err) {
-      setError(err.name === "NotAllowedError" ? "Cancelado" : (err.message === "invalid_setup_code" ? "Código incorrecto, usado o vencido" : err.message === "blocked" ? "Esta cuenta está bloqueada" : (err.message || "No se pudo registrar")));
-    } finally { setBusy(false); }
+    } catch (err) { setError(setupError(err)); }
+    finally { setBusy(false); }
   }
 
   async function handleSetupPassword(e) {
     e.preventDefault();
     setBusy(true); setError("");
     try {
-      const { token, userLabel } = await authApi("password-set", { setupCode, userLabel: setupName.trim(), password: setupPass });
+      const { token, userLabel } = await authApi("password-set", { setupCode: setupCode.trim(), userLabel: setupName.trim(), password: setupPass });
       onLogin(token, userLabel);
-    } catch (err) {
-      setError(err.message === "invalid_setup_code" ? "Código incorrecto, usado o vencido" : err.message === "blocked" ? "Esta cuenta está bloqueada" : (err.message || "No se pudo guardar"));
-    } finally { setBusy(false); }
+    } catch (err) { setError(setupError(err)); }
+    finally { setBusy(false); }
   }
+
+  const switchTab = t => { setTab(t); setError(""); setForgot(false); };
 
   return (
     <div className="lg-wrap">
       <style>{LG_STYLES}</style>
-      <div className="lg-card">
-        <div className="lg-title">Bolsillo 🔒</div>
-        {mode === "login" && (
+      <div className="lg-col">
+        <div className="lg-card">
+          <div className="lg-logo">
+            <img src="/apple-touch-icon.png" alt="" />
+            <div className="lg-title">Bolsillo</div>
+          </div>
+
+          <div className="lg-tabs" role="tablist">
+            <button role="tab" aria-selected={tab === "signin"} className={`lg-tab ${tab === "signin" ? "on" : ""}`} onClick={() => switchTab("signin")}>Entrar</button>
+            <button role="tab" aria-selected={tab === "create"} className={`lg-tab ${tab === "create" ? "on" : ""}`} onClick={() => switchTab("create")}>Crear cuenta</button>
+          </div>
+
+          {tab === "signin" && (
+            <>
+              {passkeySupported && (
+                <button className="lg-btn lg-btn-p" disabled={busy} onClick={() => handlePasskeyLogin("dashboard")}>
+                  {busy ? "..." : "🔐 Entrar con Face ID / Touch ID"}
+                </button>
+              )}
+              {passkeySupported && (
+                <button className="lg-btn lg-btn-g" disabled={busy} onClick={() => handlePasskeyLogin("quickadd")}>
+                  {busy ? "..." : "➕ Agregar gasto rápido"}
+                </button>
+              )}
+              <div className="lg-or">o con tu contraseña</div>
+              <form onSubmit={handlePasswordLogin}>
+                <label className="lg-label" htmlFor="lg-user">Nombre</label>
+                <input id="lg-user" className="lg-input" placeholder="Tu nombre" value={pwUser} onChange={e => setPwUser(e.target.value)} autoCapitalize="words" autoComplete="username" required />
+                <label className="lg-label" htmlFor="lg-pass">Contraseña</label>
+                <input id="lg-pass" className="lg-input" type="password" placeholder="Contraseña" value={pwPass} onChange={e => setPwPass(e.target.value)} autoComplete="current-password" required />
+                {error && <p className="lg-error">{error}</p>}
+                <button className="lg-btn lg-btn-d" type="submit" disabled={busy}>{busy ? "..." : "Entrar"}</button>
+              </form>
+              <button className="lg-link" type="button" onClick={() => setForgot(f => !f)}>¿Olvidaste tu contraseña?</button>
+              {forgot && <p className="lg-note">Pídele a quien administra Bolsillo una invitación nueva con tu nombre. En la pestaña <b>Crear cuenta</b> la usas para poner una contraseña nueva o registrar tu Face ID otra vez.</p>}
+            </>
+          )}
+
+          {tab === "create" && (
+            <>
+              <p className="lg-note" style={{ marginTop: 0, marginBottom: 14 }}>Para crear tu cuenta necesitas una <b>invitación</b> de quien administra Bolsillo. El código sirve una sola vez y vence en 48 horas.</p>
+              <label className="lg-label" htmlFor="lg-code">Código de invitación</label>
+              <input id="lg-code" className="lg-input lg-code" placeholder="XXXX-XXXX-XXXX" value={setupCode} onChange={e => setSetupCode(e.target.value)} autoCapitalize="characters" autoCorrect="off" autoComplete="off" />
+              <label className="lg-label" htmlFor="lg-name">Tu nombre <span style={{ fontWeight: 400, color: "#94a3b8" }}>(el de la invitación)</span></label>
+              <input id="lg-name" className="lg-input" placeholder="Tu nombre" value={setupName} onChange={e => setSetupName(e.target.value)} autoCapitalize="words" autoComplete="off" />
+              {passkeySupported && (
+                <button className="lg-btn lg-btn-p" disabled={busy || !setupCode.trim()} onClick={handleSetupPasskey}>
+                  {busy ? "..." : "🔐 Crear cuenta con Face ID / Touch ID"}
+                </button>
+              )}
+              <div className="lg-or">o con una contraseña</div>
+              <form onSubmit={handleSetupPassword}>
+                <input className="lg-input" type="password" placeholder="Contraseña (mínimo 6)" value={setupPass} onChange={e => setSetupPass(e.target.value)} autoComplete="new-password" />
+                {error && <p className="lg-error">{error}</p>}
+                <button className="lg-btn lg-btn-d" type="submit" disabled={busy || !setupCode.trim() || setupPass.length < 6}>{busy ? "..." : "Crear cuenta con contraseña"}</button>
+              </form>
+            </>
+          )}
+        </div>
+
+        {!installed && (
           <>
-            {passkeySupported && (
-              <button className="lg-btn lg-btn-p" disabled={busy} onClick={() => handlePasskeyLogin("dashboard")}>
-                {busy ? "..." : "🔐 Entrar con Face ID / Touch ID"}
-              </button>
-            )}
-            {passkeySupported && (
-              <button className="lg-btn lg-btn-g" disabled={busy} onClick={() => handlePasskeyLogin("quickadd")}>
-                {busy ? "..." : "➕ Agregar gasto rápido"}
-              </button>
-            )}
-            <button className="lg-btn lg-btn-g" disabled={busy} onClick={() => { setMode("password"); setError(""); }}>
-              Usar contraseña
+            <button className="lg-install" onClick={handleInstall}>
+              <span aria-hidden="true" style={{ fontSize: 16 }}>⬇</span> Instalar app
             </button>
-            {error && <p className="lg-error">{error}</p>}
-            <button className="lg-link" onClick={() => { setMode("setup"); setError(""); }}>Tengo una invitación</button>
+            {installHelp && (
+              <p className="lg-note">
+                {isIOS()
+                  ? <>En el iPhone: abre esta página en <b>Safari</b>, toca el botón <b>Compartir</b> (el cuadro con la flecha hacia arriba) y elige <b>Agregar a pantalla de inicio</b>.</>
+                  : <>En el menú de tu navegador (⋮ o Compartir) elige <b>Instalar app</b> o <b>Agregar a pantalla de inicio</b>.</>}
+              </p>
+            )}
           </>
         )}
-        {mode === "password" && (
-          <form onSubmit={handlePasswordLogin}>
-            <input className="lg-input" placeholder="Tu nombre" value={pwUser} onChange={e=>setPwUser(e.target.value)} required />
-            <input className="lg-input" type="password" placeholder="Contraseña" value={pwPass} onChange={e=>setPwPass(e.target.value)} required />
-            {error && <p className="lg-error">{error}</p>}
-            <button className="lg-btn lg-btn-p" type="submit" disabled={busy}>{busy ? "..." : "Entrar"}</button>
-            <button className="lg-link" type="button" onClick={()=>{ setMode("login"); setError(""); }}>Volver</button>
-          </form>
-        )}
-        {mode === "setup" && (
-          <div>
-            <input className="lg-input" placeholder="Tu nombre" value={setupName} onChange={e=>setSetupName(e.target.value)} />
-            <input className="lg-input" placeholder="Código de invitación" value={setupCode} onChange={e=>setSetupCode(e.target.value)} autoCapitalize="characters" autoCorrect="off" />
-            <p style={{fontSize:12,color:"#64748b",margin:"0 0 10px",lineHeight:1.4}}>El código te lo da quien administra Bolsillo. Sirve una sola vez.</p>
-            {passkeySupported && (
-              <button className="lg-btn lg-btn-p" disabled={busy || !setupName.trim() || !setupCode} onClick={handleSetupPasskey}>
-                {busy ? "..." : "🔐 Registrar Face ID / Touch ID"}
-              </button>
-            )}
-            <form onSubmit={handleSetupPassword}>
-              <input className="lg-input" type="password" placeholder="Contraseña (respaldo, min. 6)" value={setupPass} onChange={e=>setSetupPass(e.target.value)} />
-              <button className="lg-btn lg-btn-g" type="submit" disabled={busy || !setupName.trim() || !setupCode || setupPass.length<6}>
-                {busy ? "..." : "Guardar contraseña"}
-              </button>
-            </form>
-            {error && <p className="lg-error">{error}</p>}
-            <button className="lg-link" onClick={() => { setMode("login"); setError(""); }}>Volver</button>
-          </div>
-        )}
+        <p className="lg-foot">Solo personas autorizadas.</p>
       </div>
     </div>
   );
