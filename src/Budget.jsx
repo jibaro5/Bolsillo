@@ -1,7 +1,7 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   KINDS, lineAmount, annualFromPeriod, budgetPeriod, shiftPeriod,
-  spentFor, budgetStatus, planTotals, categoryConflicts,
+  spentFor, budgetStatus, planTotals, categoryConflicts, moveLine,
 } from "./budgetMath.js";
 
 // Budget section. The numbers live in the Sheet ("Presupuesto" tab) and are
@@ -130,6 +130,82 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
   const measuredSpent = measuredRows.reduce((s, r) => s + r.spent, 0);
 
   function changeKind(k) { setKind(k); saveKind(k); }
+
+  // ---- drag and drop: reorder lines, or move one to another table ----
+  const [drag, setDrag] = useState(null);            // { id, name, x, y, over: { grupo, beforeId } | null }
+  const linesRef = useRef(lines);
+  linesRef.current = lines;
+  const saveChain = useRef(Promise.resolve());
+
+  // Where would the dragged line land if released at (x, y)?
+  function locate(x, y, dragId) {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return null;
+    const tr = el.closest("tr[data-line-id]");
+    if (tr) {
+      const id = tr.dataset.lineId, grupo = tr.dataset.group;
+      if (id === dragId) return { grupo, beforeId: dragId };
+      const r = tr.getBoundingClientRect();
+      if (y < r.top + r.height / 2) return { grupo, beforeId: id };
+      let next = tr.nextElementSibling;
+      while (next && !next.dataset.lineId) next = next.nextElementSibling;   // skip the Total row
+      return { grupo, beforeId: next ? next.dataset.lineId : null };
+    }
+    const box = el.closest("[data-group]");
+    if (!box) return null;
+    if (el.closest("thead")) {
+      const first = box.querySelector("tr[data-line-id]");
+      return { grupo: box.dataset.group, beforeId: first ? first.dataset.lineId : null };
+    }
+    return { grupo: box.dataset.group, beforeId: null };
+  }
+
+  function startDrag(e, row) {
+    e.preventDefault();
+    e.stopPropagation();
+    const st = { id: row.id, name: row.nombre, x: e.clientX, y: e.clientY, over: null };
+    const sync = () => setDrag({ ...st });
+    const place = () => { st.over = locate(st.x, st.y, st.id); sync(); };
+    const onMove = ev => { st.x = ev.clientX; st.y = ev.clientY; place(); };
+    // Near the top or bottom edge the page scrolls by itself so a line can travel far.
+    const tick = setInterval(() => {
+      const zone = 90, h = window.innerHeight;
+      if (st.y < zone) window.scrollBy(0, -Math.ceil((zone - st.y) / 6));
+      else if (st.y > h - zone) window.scrollBy(0, Math.ceil((st.y - (h - zone)) / 6));
+      else return;
+      place();
+    }, 30);
+    const finish = commit => {
+      clearInterval(tick);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      document.body.style.userSelect = "";
+      setDrag(null);
+      if (commit) dropLine(st);
+    };
+    const onUp = () => finish(true);
+    const onCancel = () => finish(false);
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove, { passive: true });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    place();
+  }
+
+  function dropLine(st) {
+    const over = st.over;
+    if (!over || over.beforeId === st.id) return;
+    const current = linesRef.current;
+    const next = moveLine(current, st.id, over.grupo, over.beforeId);
+    const same = next.length === current.length && next.every((l, i) => l.id === current[i].id && l.grupo === current[i].grupo);
+    if (same) return;
+    setData(d => ({ ...d, lines: next }));
+    // One save at a time, in the order they were made (the Drive view is rebuilt after each).
+    saveChain.current = saveChain.current
+      .then(() => post("budget-reorder", { items: next.map(l => ({ id: l.id, grupo: l.grupo })) }))
+      .catch(err => { console.error(err); showToast("No se pudo guardar el orden", "warn"); return load(); });
+  }
   function step(dir) { if (period) setRef(shiftPeriod(period, dir, anchor).start); }
 
   function openAdd(grupo) { setConfirmDel(false); setForm({ ...EMPTY_FORM, grupo }); }
@@ -218,6 +294,9 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
     .bd-t tr.tot td{font-weight:700;border-top:2px solid #94a3b8;border-bottom:none;background:#f1f5f9!important;}
     .bd-t td{font-size:13px;color:#0f172a;}
     .bd-t td .sub{display:block;font-size:10.5px;color:#64748b;margin-top:1px;white-space:nowrap;}
+    .bd-handle{display:inline-block;width:20px;margin-right:2px;color:#b8c2d0;font-size:15px;line-height:1;letter-spacing:-3px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;vertical-align:middle;padding:6px 0;}
+    .bd-dragging td{opacity:.35;}
+    .bd-t tr.bd-drop td{box-shadow:inset 0 3px 0 #0f4c81;}
     .bd-tr{cursor:pointer;}
     .bd-tr:active td{background:#e2e8f0!important;}
     .bd-pill{display:inline-flex;align-items:center;gap:4px;padding:6px 10px;border-radius:99px;border:1.5px solid #e2e8f0;background:#fff;font-size:12px;font-weight:600;color:#64748b;cursor:pointer;font-family:inherit;}
@@ -344,8 +423,10 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
           {GROUPS.map(g => {
             const groupRows = rows.filter(r => r.grupo === g.id && (!searching || shownIds.has(r.id)));
             if (searching && groupRows.length === 0) return null;
+            const over = drag?.over;
+            const canDrag = !searching && lines.length > 1;
             return (
-              <div key={g.id} style={{ marginBottom: 14 }}>
+              <div key={g.id} data-group={g.id} style={{ marginBottom: 14 }}>
                 <table className="bd-t" style={{ marginBottom: 6 }}>
                   <thead>
                     <tr><th className="g" colSpan={4} style={{ background: g.bg, color: g.fg }}>{g.title}</th></tr>
@@ -353,8 +434,14 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
                   </thead>
                   <tbody>
                     {groupRows.map(r => (
-                      <tr key={r.id} className="bd-tr" onClick={() => openEdit(r)}>
+                      <tr key={r.id} data-line-id={r.id} data-group={g.id}
+                        className={`bd-tr ${drag?.id === r.id ? "bd-dragging" : ""} ${over && over.grupo === g.id && over.beforeId === r.id && drag.id !== r.id ? "bd-drop" : ""}`}
+                        onClick={() => openEdit(r)}>
                         <td>
+                          {canDrag && (
+                            <span className="bd-handle" role="button" aria-label={`Arrastrar ${r.nombre} para reordenar`}
+                              onPointerDown={e => startDrag(e, r)} onClick={e => e.stopPropagation()}>⋮⋮</span>
+                          )}
                           {r.nombre}{searching && !found.direct.some(d => d.id === r.id) && <span className="sub" style={{ color: "#0f4c81" }}>Relacionado</span>}
                           {r.measured && period && (
                             <>
@@ -370,7 +457,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
                         <Nums vals={r.amounts} fmt={fmt} dim={r.anual <= 0} />
                       </tr>
                     ))}
-                    {!searching && <tr className="tot"><td>Total</td><Nums vals={totals.groups[g.id]} fmt={fmt} /></tr>}
+                    {!searching && <tr className={`tot ${over && over.grupo === g.id && over.beforeId === null ? "bd-drop" : ""}`}><td>Total</td><Nums vals={totals.groups[g.id]} fmt={fmt} /></tr>}
                   </tbody>
                 </table>
                 <button className="btn btn-g" style={{ width: "100%", padding: "8px" }} onClick={() => openAdd(g.id)}>+ Agregar línea</button>
@@ -378,6 +465,10 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
             );
           })}
         </>
+      )}
+
+      {drag && (
+        <div style={{ position: "fixed", left: drag.x + 12, top: drag.y - 18, zIndex: 400, pointerEvents: "none", background: "#0f4c81", color: "#fff", fontSize: 13, fontWeight: 600, padding: "7px 12px", borderRadius: 10, boxShadow: "0 8px 20px rgba(15,76,129,.35)", maxWidth: 220, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{drag.name}</div>
       )}
 
       {form && (

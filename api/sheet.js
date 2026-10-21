@@ -2,7 +2,7 @@ import { sheetsFetch, getSheetGid, rowFromUpdatedRange } from "../lib/sheetsClie
 import { requireAuth } from "../lib/session.js";
 import { listCards, addCard, editCard, deleteCard, getCard } from "../lib/cardsStore.js";
 import { listRules, addRule, editRule, deleteRule } from "../lib/rewardsStore.js";
-import { listLines, addLine, editLine, deleteLine, getConfig, setConfig } from "../lib/budgetStore.js";
+import { listLines, addLine, editLine, deleteLine, reorderLines, getConfig, setConfig } from "../lib/budgetStore.js";
 import { rebuildBudgetView, refreshBudgetView } from "../lib/budgetView.js";
 
 export const config = { api: { bodyParser: true } };
@@ -249,6 +249,7 @@ export default async function handler(req, res) {
     else if (action === "budget-add") { result = await addLine(body); await refreshView(); }
     else if (action === "budget-edit") { const r = await editLine(body.id, body); if (r?.structural) await refreshView(); result = { ok:true }; }
     else if (action === "budget-delete") { await deleteLine(body.id); await refreshView(); result = { ok:true }; }
+    else if (action === "budget-reorder") { await reorderLines(body.items); await refreshView(); result = { ok:true }; }
     else if (action === "budget-view") result = { ok:true, ...(await rebuildBudgetView()) };
     else if (action === "budget-config") { await setConfig(body); result = { ok:true, config: await getConfig() }; }
 

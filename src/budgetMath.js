@@ -105,3 +105,23 @@ export function categoryConflicts(lines, cats, exceptId) {
     .map(l => ({ line: l, cats: l.categorias.filter(c => mine.has(c.toLowerCase())) }))
     .filter(x => x.cats.length);
 }
+
+// Drag and drop: moves a line to `grupo`, right before `beforeId` (or at the end of that group when
+// beforeId is null) and renumbers `orden` 1..N in display order (Esenciales, No esenciales, Ahorro).
+const GROUP_ORDER = ["esencial", "no_esencial", "ahorro"];
+export function moveLine(lines, id, grupo, beforeId = null) {
+  const moving = lines.find(l => l.id === id);
+  if (!moving || !GROUP_ORDER.includes(grupo)) return lines;
+  const byGroup = Object.fromEntries(GROUP_ORDER.map(g => [g, lines.filter(l => l.id !== id && l.grupo === g)]));
+  const item = { ...moving, grupo };
+  const target = byGroup[grupo];
+  const at = beforeId && beforeId !== id ? target.findIndex(l => l.id === beforeId) : -1;
+  if (beforeId === id) {
+    // dropped back on itself: keep its place
+    const own = lines.filter(l => l.grupo === moving.grupo);
+    byGroup[moving.grupo] = [...byGroup[moving.grupo]];
+    byGroup[moving.grupo].splice(own.findIndex(l => l.id === id), 0, item);
+  } else if (at >= 0) target.splice(at, 0, item);
+  else target.push(item);
+  return GROUP_ORDER.flatMap(g => byGroup[g]).map((l, i) => ({ ...l, orden: i + 1 }));
+}
