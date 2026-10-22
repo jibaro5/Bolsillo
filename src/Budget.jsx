@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, Fragment } from "react";
 import {
   KINDS, lineAmount, annualFromPeriod, budgetPeriod, shiftPeriod,
   spentFor, budgetStatus, planTotals, categoryConflicts, moveLine,
@@ -68,14 +68,14 @@ const readKind = () => { try { const k = localStorage.getItem("bolsillo_budget_k
 const saveKind = k => { try { localStorage.setItem("bolsillo_budget_kind", k); } catch { /* storage unavailable */ } };
 
 export default function Budget({ expenses, fetcher, showToast, owedFor, categories, catEmoji, fmt, todayStr, scriptUrl }) {
-  const [data, setData] = useState({ lines: [], config: { sueldoNetoAnual: 0, anclaPago: "" } });
+  const [data, setData] = useState({ lines: [], config: { sueldoNetoAnual: 0, anclaPago: "", fondoMeses: 3 }, ingresos: [] });
   const [state, setState] = useState("loading"); // loading | ok | error
   const [kind, setKind] = useState(readKind);
   const [ref, setRef] = useState(todayStr);
   const [form, setForm] = useState(null);       // edit/add modal
   const [confirmDel, setConfirmDel] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [cfgForm, setCfgForm] = useState({ sueldoNetoAnual: "", anclaPago: "" });
+  const [cfgForm, setCfgForm] = useState({ ingresos: [], fondoMeses: "3", anclaPago: "" });
   const [saving, setSaving] = useState(false);
   const [q, setQ] = useState("");
   const [searchFocus, setSearchFocus] = useState(false);
@@ -91,7 +91,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
       const res = await fetcher(`${scriptUrl}?action=budget-list`);
       if (!res.ok) throw new Error(`budget-list ${res.status}`);
       const out = await res.json();
-      setData({ lines: out.lines || [], config: out.config || { sueldoNetoAnual: 0, anclaPago: "" } });
+      setData({ lines: out.lines || [], config: out.config || { sueldoNetoAnual: 0, anclaPago: "", fondoMeses: 3 }, ingresos: out.ingresos || [] });
       setState("ok");
     } catch (err) {
       console.error(err);
@@ -100,7 +100,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
   }
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const { lines, config } = data;
+  const { lines, config, ingresos } = data;
   const anchor = config.anclaPago || "";
   const period = budgetPeriod(kind, ref, anchor);
   const isCurrent = period && todayStr >= period.start && todayStr <= period.end;
@@ -121,6 +121,11 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
       groups: Object.fromEntries(GROUPS.map(g => [g.id, pick(x => x.groups[g.id])])),
     };
   }, [lines, config.sueldoNetoAnual]);
+  // Emergency fund suggested: N months of essential expenses.
+  const fondoMeses = config.fondoMeses || 3;
+  const esencialesAnual = lines.filter(l => l.grupo === "esencial").reduce((sum, l) => sum + (Number(l.anual) || 0), 0);
+  const esencialesMes = lineAmount(esencialesAnual, "mensual");
+  const fondoSugerido = Math.round(esencialesMes * fondoMeses * 100) / 100;
   const measuredRows = rows.filter(r => r.measured);
   const searching = q.trim().length > 0;
   const found = useMemo(() => searchLines(lines, q), [lines, q]);
@@ -257,13 +262,16 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
   async function saveSettings(e) {
     e.preventDefault();
     if (saving) return;
+    const people = cfgForm.ingresos.filter(p => String(p.nombre).trim() || p.neto !== "" || p.bruto !== "");
+    if (people.some(p => !String(p.nombre).trim())) { showToast("Cada ingreso necesita un nombre", "warn"); return; }
     setSaving(true);
     try {
-      const out = await post("budget-config", {
-        sueldoNetoAnual: cfgForm.sueldoNetoAnual === "" ? 0 : Number(cfgForm.sueldoNetoAnual),
-        anclaPago: cfgForm.anclaPago,
+      const out = await post("budget-ingresos", {
+        ingresos: people.map(p => ({ id: p.id, nombre: String(p.nombre).trim(), bruto: p.bruto === "" ? "" : Number(p.bruto), neto: p.neto === "" ? 0 : Number(p.neto) })),
+        fondoMeses: Number(cfgForm.fondoMeses) || 3,
       });
-      setData(d => ({ ...d, config: out.config }));
+      const cfg = await post("budget-config", { anclaPago: cfgForm.anclaPago });
+      setData(d => ({ ...d, ingresos: out.ingresos, config: { ...cfg.config, fondoMeses: out.config.fondoMeses } }));
       setShowSettings(false);
       showToast("Ajustes guardados");
     } catch (err) {
@@ -272,9 +280,18 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
     } finally { setSaving(false); }
   }
   function openSettings() {
-    setCfgForm({ sueldoNetoAnual: config.sueldoNetoAnual ? String(config.sueldoNetoAnual) : "", anclaPago: config.anclaPago || "" });
+    // Older installs only have a single net amount: start the list with it.
+    const list = ingresos.length ? ingresos : (config.sueldoNetoAnual ? [{ nombre: "Sueldo", bruto: "", neto: config.sueldoNetoAnual }] : [{ nombre: "", bruto: "", neto: "" }]);
+    setCfgForm({
+      ingresos: list.map(p => ({ id: p.id, nombre: p.nombre, bruto: p.bruto === "" ? "" : String(p.bruto), neto: p.neto === "" ? "" : String(p.neto) })),
+      fondoMeses: String(fondoMeses),
+      anclaPago: config.anclaPago || "",
+    });
     setShowSettings(true);
   }
+  const setPerson = (i, patch) => setCfgForm(f => ({ ...f, ingresos: f.ingresos.map((p, k) => k === i ? { ...p, ...patch } : p) }));
+  const netoNido = cfgForm.ingresos.reduce((sum, p) => sum + (Number(p.neto) || 0), 0);
+  const brutoNido = cfgForm.ingresos.reduce((sum, p) => sum + (Number(p.bruto) || 0), 0);
 
   const css = `
     .bd-card{background:#fff;border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(15,23,42,.06);}
@@ -297,6 +314,8 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
     .bd-handle{display:inline-block;width:20px;margin-right:2px;color:#b8c2d0;font-size:15px;line-height:1;letter-spacing:-3px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;vertical-align:middle;padding:6px 0;}
     .bd-dragging td{opacity:.35;}
     .bd-t tr.bd-drop td{box-shadow:inset 0 3px 0 #0f4c81;}
+    .bd-t tr.bd-quiet td{color:#64748b;font-style:italic;font-size:12px;}
+    .bd-t tr.bd-sub td{font-weight:700;background:#eef2f7!important;border-top:1px solid #94a3b8;}
     .bd-tr{cursor:pointer;}
     .bd-tr:active td{background:#e2e8f0!important;}
     .bd-pill{display:inline-flex;align-items:center;gap:4px;padding:6px 10px;border-radius:99px;border:1.5px solid #e2e8f0;background:#fff;font-size:12px;font-weight:600;color:#64748b;cursor:pointer;font-family:inherit;}
@@ -399,20 +418,36 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
                 <div style={{ marginTop: 8 }}><button className="btn btn-p" onClick={openSettings}>Poner fecha de pago</button></div>
               </div>
             )}
-            <button onClick={openSettings} style={{ marginTop: 12, border: "none", background: "none", color: "#0f4c81", fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0, fontFamily: "inherit" }}>⚙️ Sueldo y fecha de pago</button>
+            <button onClick={openSettings} style={{ marginTop: 12, border: "none", background: "none", color: "#0f4c81", fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0, fontFamily: "inherit" }}>⚙️ Ingresos, fondo y fecha de pago</button>
           </div>
 
           {!searching && <table className="bd-t">
             <thead>
-              <tr><th className="g" colSpan={4} style={{ background: "#f8fafc", color: "#0f172a" }}>Resumen del sueldo</th></tr>
+              <tr><th className="g" colSpan={4} style={{ background: "#f8fafc", color: "#0f172a" }}>Ingresos y resumen</th></tr>
               <ColHead />
             </thead>
             <tbody>
-              <tr><td>Sueldo neto</td><Nums vals={totals.sueldo} fmt={fmt} /></tr>
+              {ingresos.map(p => (
+                <Fragment key={p.id}>
+                  {Number(p.bruto) > 0 && <tr className="bd-quiet"><td>Sueldo bruto {p.nombre}</td><Nums vals={amountsOf(p.bruto)} fmt={fmt} /></tr>}
+                  <tr><td>Sueldo neto {p.nombre}</td><Nums vals={amountsOf(p.neto)} fmt={fmt} /></tr>
+                </Fragment>
+              ))}
+              {ingresos.length > 1 && <tr className="bd-sub"><td>Sueldo neto Nido</td><Nums vals={totals.sueldo} fmt={fmt} /></tr>}
+              {ingresos.length === 0 && <tr><td>Sueldo neto</td><Nums vals={totals.sueldo} fmt={fmt} /></tr>}
               <tr><td>Planificado</td><Nums vals={totals.plan} fmt={fmt} /></tr>
               <tr className="tot"><td style={over ? { color: "#dc2626" } : undefined}>{over ? "Te pasas del sueldo" : "Sin asignar"}</td><Nums vals={totals.sinAsignar} fmt={fmt} tone={over ? "#dc2626" : null} /></tr>
             </tbody>
           </table>}
+
+          {!searching && (
+            <div className="bd-card" style={{ padding: 14 }}>
+              <div style={{ fontSize: 11, letterSpacing: 1, fontWeight: 700, color: "#94a3b8", marginBottom: 6 }}>🛟 FONDO DE EMERGENCIA SUGERIDO</div>
+              <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(fondoSugerido)}</div>
+              <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>{fondoMeses} {fondoMeses === 1 ? "mes" : "meses"} × {fmt(esencialesMes)} de gastos esenciales al mes</div>
+              <button onClick={openSettings} style={{ marginTop: 8, border: "none", background: "none", color: "#0f4c81", fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0, fontFamily: "inherit" }}>Cambiar los meses</button>
+            </div>
+          )}
 
           {searching && (
             <div style={{ fontSize: 12, color: "#64748b", margin: "0 2px 10px" }}>
@@ -543,14 +578,38 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
       {showSettings && (
         <div className="modal-overlay" onClick={() => setShowSettings(false)}>
           <form className="modal" onClick={e => e.stopPropagation()} onSubmit={saveSettings}>
-            <div style={{ fontSize: 11, letterSpacing: 2, color: "#0f4c81", marginBottom: 14, fontWeight: 700 }}>SUELDO Y FECHA DE PAGO</div>
-            <div className="field"><label>Sueldo neto anual</label>
-              <input className="inp" type="number" min="0" step="0.01" inputMode="decimal" value={cfgForm.sueldoNetoAnual} onChange={e => setCfgForm(f => ({ ...f, sueldoNetoAnual: e.target.value }))} placeholder="72000" />
-              {cfgForm.sueldoNetoAnual !== "" && (
-                <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
-                  {KINDS.map(k => `${KIND_LABEL[k]} ${fmt(lineAmount(cfgForm.sueldoNetoAnual, k))}`).join(" · ")}
+            <div style={{ fontSize: 11, letterSpacing: 2, color: "#0f4c81", marginBottom: 14, fontWeight: 700 }}>INGRESOS, FONDO Y FECHA DE PAGO</div>
+            <div className="field"><label>Ingresos de cada persona (por año)</label>
+              {cfgForm.ingresos.map((p, i) => (
+                <div key={i} style={{ padding: "10px 0", borderBottom: "1px solid #f1f5f9" }}>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                    <input className="inp" placeholder="Nombre" value={p.nombre} maxLength={40} onChange={e => setPerson(i, { nombre: e.target.value })} />
+                    {cfgForm.ingresos.length > 1 && <button type="button" className="btn btn-g btn-sm" aria-label={`Quitar a ${p.nombre || "persona"}`} onClick={() => setCfgForm(f => ({ ...f, ingresos: f.ingresos.filter((_, k) => k !== i) }))}>✕</button>}
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700, marginBottom: 4 }}>Sueldo bruto</div>
+                      <input className="inp" type="number" min="0" step="0.01" inputMode="decimal" placeholder="0.00" value={p.bruto} onChange={e => setPerson(i, { bruto: e.target.value })} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700, marginBottom: 4 }}>Sueldo neto</div>
+                      <input className="inp" type="number" min="0" step="0.01" inputMode="decimal" placeholder="0.00" value={p.neto} onChange={e => setPerson(i, { neto: e.target.value })} />
+                    </div>
+                  </div>
                 </div>
-              )}
+              ))}
+              {cfgForm.ingresos.length < 10 && <button type="button" className="btn btn-g btn-sm" style={{ marginTop: 10 }} onClick={() => setCfgForm(f => ({ ...f, ingresos: [...f.ingresos, { nombre: "", bruto: "", neto: "" }] }))}>+ Agregar persona</button>}
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, marginTop: 12 }}>
+                <span>Neto combinado (Nido)</span><span>{fmt(netoNido)}</span>
+              </div>
+              {brutoNido > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#94a3b8", marginTop: 2 }}><span>Bruto combinado</span><span>{fmt(brutoNido)}</span></div>}
+              <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
+                {KINDS.map(k => `${KIND_LABEL[k]} ${fmt(lineAmount(netoNido, k))}`).join(" · ")}
+              </div>
+            </div>
+            <div className="field"><label>Fondo de emergencia: meses de gastos esenciales</label>
+              <input className="inp" type="number" min="1" max="36" step="1" inputMode="numeric" value={cfgForm.fondoMeses} onChange={e => setCfgForm(f => ({ ...f, fondoMeses: e.target.value }))} />
+              <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 6 }}>El fondo sugerido es la suma de tus gastos esenciales de un mes por esta cantidad de meses.</div>
             </div>
             <div className="field"><label>Un día de pago real</label>
               <input className="inp" type="date" value={cfgForm.anclaPago} onChange={e => setCfgForm(f => ({ ...f, anclaPago: e.target.value }))} />

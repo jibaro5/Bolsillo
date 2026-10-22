@@ -2,7 +2,7 @@ import { sheetsFetch, getSheetGid, rowFromUpdatedRange } from "../lib/sheetsClie
 import { requireAuth } from "../lib/session.js";
 import { listCards, addCard, editCard, deleteCard, getCard } from "../lib/cardsStore.js";
 import { listRules, addRule, editRule, deleteRule } from "../lib/rewardsStore.js";
-import { listLines, addLine, editLine, deleteLine, reorderLines, getConfig, setConfig } from "../lib/budgetStore.js";
+import { listLines, addLine, editLine, deleteLine, reorderLines, listIncomes, setIncomes, getConfig, setConfig } from "../lib/budgetStore.js";
 import { rebuildBudgetView, refreshBudgetView } from "../lib/budgetView.js";
 
 export const config = { api: { bodyParser: true } };
@@ -245,11 +245,22 @@ export default async function handler(req, res) {
     else if (action === "rules-edit") { await editRule(body.id, body); result = { ok:true }; }
     else if (action === "rules-delete") { await deleteRule(body.id); result = { ok:true }; }
 
-    else if (action === "budget-list") result = { lines: await listLines(), config: await getConfig() };
+    else if (action === "budget-list") result = { lines: await listLines(), config: await getConfig(), ingresos: await listIncomes() };
     else if (action === "budget-add") { result = await addLine(body); await refreshView(); }
     else if (action === "budget-edit") { const r = await editLine(body.id, body); if (r?.structural) await refreshView(); result = { ok:true }; }
     else if (action === "budget-delete") { await deleteLine(body.id); await refreshView(); result = { ok:true }; }
     else if (action === "budget-reorder") { await reorderLines(body.items); await refreshView(); result = { ok:true }; }
+    else if (action === "budget-ingresos") {
+      // Incomes per person plus how many months of essentials the emergency fund should cover; rebuilds the Drive view.
+      if (body.fondoMeses !== undefined) {   // check before writing anything
+        const n = Number(body.fondoMeses);
+        if (!Number.isInteger(n) || n < 1 || n > 36) throw new Error("config_invalida");
+      }
+      const ingresos = await setIncomes(body.ingresos);
+      if (body.fondoMeses !== undefined) await setConfig({ fondoMeses: body.fondoMeses });
+      await refreshView();
+      result = { ok:true, ingresos, config: await getConfig() };
+    }
     else if (action === "budget-view") result = { ok:true, ...(await rebuildBudgetView()) };
     else if (action === "budget-config") { await setConfig(body); result = { ok:true, config: await getConfig() }; }
 
