@@ -2731,6 +2731,10 @@ const LG_STYLES = `
   .lg-error{color:#dc2626;font-size:12.5px;margin:-4px 0 10px;text-align:left;}
   .lg-install{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-top:14px;padding:13px 16px;border-radius:14px;border:1.5px solid #e2e8f0;background:rgba(255,255,255,.7);color:#334155;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;}
   .lg-foot{text-align:center;font-size:12px;color:#94a3b8;margin:14px 0 0;}
+  .lg-hint{font-size:12px;color:#94a3b8;margin:-2px 0 6px;text-align:center;}
+  .lg-fab{position:fixed;right:18px;bottom:calc(20px + env(safe-area-inset-bottom));width:56px;height:56px;border-radius:18px;border:none;cursor:pointer;background:linear-gradient(135deg,#0f4c81,#1e6ab0);color:#fff;font-size:28px;font-weight:400;line-height:1;box-shadow:0 10px 22px -6px rgba(15,76,129,.55);display:flex;align-items:center;justify-content:center;font-family:inherit;}
+  .lg-fab:active{transform:scale(.95);}
+  .lg-fab:disabled{opacity:.6;cursor:default;}
 `;
 
 // Not installed yet? "Instalar app" uses the browser's own install prompt when it offers one
@@ -2799,6 +2803,12 @@ function LoginGate({ onLogin }) {
 
   async function handlePasswordLogin(e) {
     e.preventDefault();
+    // Nothing typed: "Entrar" uses Face ID / Touch ID.
+    if (!pwUser.trim() && !pwPass) {
+      if (passkeySupported) return handlePasskeyLogin("dashboard");
+      setError("Escribe tu nombre y tu contraseña"); return;
+    }
+    if (!pwUser.trim() || !pwPass) { setError("Escribe tu nombre y tu contraseña"); return; }
     setBusy(true); setError("");
     try {
       const { token, userLabel } = await authApi("password-login", { userLabel: pwUser.trim(), password: pwPass });
@@ -2848,24 +2858,14 @@ function LoginGate({ onLogin }) {
 
           {tab === "signin" && (
             <>
-              {passkeySupported && (
-                <button className="lg-btn lg-btn-p" disabled={busy} onClick={() => handlePasskeyLogin("dashboard")}>
-                  {busy ? "..." : "🔐 Entrar con Face ID / Touch ID"}
-                </button>
-              )}
-              {passkeySupported && (
-                <button className="lg-btn lg-btn-g" disabled={busy} onClick={() => handlePasskeyLogin("quickadd")}>
-                  {busy ? "..." : "➕ Agregar gasto rápido"}
-                </button>
-              )}
-              <div className="lg-or">o con tu contraseña</div>
               <form onSubmit={handlePasswordLogin}>
                 <label className="lg-label" htmlFor="lg-user">Nombre</label>
-                <input id="lg-user" className="lg-input" placeholder="Tu nombre" value={pwUser} onChange={e => setPwUser(e.target.value)} autoCapitalize="words" autoComplete="username" required />
+                <input id="lg-user" className="lg-input" placeholder="Tu nombre" value={pwUser} onChange={e => setPwUser(e.target.value)} autoCapitalize="words" autoComplete="username" />
                 <label className="lg-label" htmlFor="lg-pass">Contraseña</label>
-                <input id="lg-pass" className="lg-input" type="password" placeholder="Contraseña" value={pwPass} onChange={e => setPwPass(e.target.value)} autoComplete="current-password" required />
+                <input id="lg-pass" className="lg-input" type="password" placeholder="Contraseña" value={pwPass} onChange={e => setPwPass(e.target.value)} autoComplete="current-password" />
                 {error && <p className="lg-error">{error}</p>}
                 <button className="lg-btn lg-btn-d" type="submit" disabled={busy}>{busy ? "..." : "Entrar"}</button>
+                {passkeySupported && <p className="lg-hint">Sin escribir nada, toca Entrar para usar Face ID.</p>}
               </form>
               <button className="lg-link" type="button" onClick={() => setForgot(f => !f)}>¿Olvidaste tu contraseña?</button>
               {forgot && <p className="lg-note">Pídele a quien administra Bolsillo una invitación nueva con tu nombre. En la pestaña <b>Crear cuenta</b> la usas para poner una contraseña nueva o registrar tu Face ID otra vez.</p>}
@@ -2910,6 +2910,9 @@ function LoginGate({ onLogin }) {
         )}
         <p className="lg-foot">Solo personas autorizadas.</p>
       </div>
+      {tab === "signin" && passkeySupported && (
+        <button className="lg-fab" aria-label="Agregar gasto rápido" title="Agregar gasto rápido" disabled={busy} onClick={() => handlePasskeyLogin("quickadd")}>{busy ? "…" : "+"}</button>
+      )}
     </div>
   );
 }
