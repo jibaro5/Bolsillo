@@ -561,6 +561,7 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [me, setMe] = useState(null); // { userLabel, rol } from the server
   const [hideNums, setHideNums] = useState(isHidden());
+  const [defaultCardId, setDefaultCardId] = useState(() => { try { return localStorage.getItem("bolsillo_default_card") || ""; } catch { return ""; } });
   const [cards, setCards] = useState([]);
   const [rules, setRules] = useState([]);
   const [plaid, setPlaid] = useState(EMPTY_PLAID);
@@ -598,9 +599,18 @@ function App() {
   // the first one — but only if nothing more specific has been picked yet.
   useEffect(() => {
     if (!cards.length) return;
-    if (!activeCard) setActiveCard(cards[0].id);
-    if (!formAccount) setFormAccount(cards[0].id);
+    // The card marked as main (kept on this device) goes first; otherwise the first one.
+    const main = cards.find(c => c.id === defaultCardId)?.id || cards[0].id;
+    if (!activeCard) setActiveCard(main);
+    if (!formAccount) setFormAccount(main);
   }, [cards]);
+  function makeMainCard(id) {
+    try { localStorage.setItem("bolsillo_default_card", id); } catch { /* storage unavailable */ }
+    setDefaultCardId(id);
+    setActiveCard(id);
+    setFormAccount(id);
+    showToast("Tarjeta principal: " + (cards.find(c => c.id === id)?.nombre || ""));
+  }
 
   useEffect(() => {
     if (activeCard && activeCard !== "debit") lastCreditCardRef.current = activeCard;
@@ -608,6 +618,7 @@ function App() {
 
   function cardName(accountId) {
     if (accountId === "debit") return "Debito";
+    if (accountId === "?") return "¿Tarjeta?";   // an Apple Pay payment whose card Bolsillo couldn't tell
     return cards.find(c => c.id === accountId)?.nombre || "Tarjeta";
   }
 
@@ -1166,7 +1177,8 @@ function App() {
     const cardId = inboxCardOf(row);
     setEditId(null);
     setImportTxId(row.txId);
-    setFormAccount(cardId || cards[0]?.id || "debit");
+    // A payment with an unrecognised card starts on the main card; it can be changed in the form.
+    setFormAccount(cards.some(c => c.id === cardId) ? cardId : (cards.some(c => c.id === defaultCardId) ? defaultCardId : (cards[0]?.id || "debit")));
     // Apple Pay payments arrive without a category; reuse the one last used for the same name.
     const category = row.category || categoryByName[row.name.trim().toLowerCase()] || "";
     setForm({ ...EMPTY_FORM, desc: row.name, amount: String(row.amount), date: row.date, category, by: row.usuario || "" });
@@ -1742,9 +1754,10 @@ function App() {
                   <div key={c.id} className="rec-row">
                     <span style={{width:14,height:14,borderRadius:"50%",background:c.color||"#0f4c81",flexShrink:0}}></span>
                     <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:13,fontWeight:600}}>{c.nombre}</div>
+                      <div style={{fontSize:13,fontWeight:600}}>{c.nombre}{(defaultCardId ? defaultCardId===c.id : cards[0]?.id===c.id) && <span className="badge badge-blue" style={{fontSize:9,marginLeft:6}}>Principal</span>}</div>
                       <div style={{fontSize:11,color:"#94a3b8"}}>Cierra el {c.cierreDay||"20"} · Paga el {c.dueDay||"17"}</div>
                     </div>
+                    <button className="btn btn-g btn-sm" style={{padding:"6px 8px"}} title="Usar como tarjeta principal" aria-label={`Usar ${c.nombre} como tarjeta principal`} onClick={()=>makeMainCard(c.id)}>{(defaultCardId ? defaultCardId===c.id : cards[0]?.id===c.id) ? "★" : "☆"}</button>
                     <button className="btn btn-g btn-sm" style={{padding:"6px 8px"}} onClick={()=>startEditCard(c)}>E</button>
                     <button className="btn btn-d btn-sm" style={{padding:"6px 8px"}} onClick={()=>setConfirmDeleteCard(c)}>D</button>
                   </div>

@@ -29,16 +29,22 @@ export function parseAmount(v) {
   return Number.isFinite(n) ? Math.abs(n) : null;
 }
 
-// "discover" (an id), "Discover" (a name) or the Wallet card's own name
-// ("Discover it Chrome") all resolve to one of the user's Bolsillo cards.
-function resolveCard(cards, ...hints) {
+// Which Bolsillo card is this? The Shortcut can send the Wallet card's own name ("Card or Pass"),
+// e.g. "Discover it Chrome" or "Chase Freedom Unlimited", or a card id. Accents, case and
+// punctuation don't matter, and either name may contain the other. The first hint that matches wins.
+const norm = t => String(t ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+export function resolveCard(cards, ...hints) {
   for (const raw of hints) {
-    const h = String(raw ?? "").trim().toLowerCase();
+    const h = norm(raw);
     if (!h) continue;
-    const byId = cards.find(c => c.id.toLowerCase() === h);
+    const byId = cards.find(c => norm(c.id) === h);
     if (byId) return byId.id;
-    const byName = cards.find(c => c.nombre && (h.includes(c.nombre.toLowerCase()) || c.nombre.toLowerCase().includes(h)));
-    if (byName) return byName.id;
+    // the longest card name that fits, so "Chase Sapphire" prefers a card named that over just "Chase"
+    const named = cards
+      .map(c => ({ c, n: norm(c.nombre) }))
+      .filter(x => x.n && (h.includes(x.n) || x.n.includes(h)))
+      .sort((a, b) => b.n.length - a.n.length)[0];
+    if (named) return named.c.id;
   }
   return null;
 }
@@ -86,12 +92,14 @@ export default async function handler(req, res) {
     if (!name || amount === null || amount <= 0 || amount > 100000) return reply(400, "invalid_payment", { error: "invalid_payment" });
 
     const cards = await listCards();
-    const cardId = resolveCard(cards, body.account, body.card, body.Card);
-    if (!cardId) return reply(400, "unknown_card", { error: "unknown_card", cards: cards.map(c => c.id) });
+    // The card Wallet reports wins; the Shortcut's fixed "account" (if any) is only the fallback.
+    // If neither is recognised the payment is still kept: it goes to "Por revisar" marked "¿Tarjeta?".
+    const resolved = resolveCard(cards, body.card, body.Card, body.cardName, body.account);
+    const cardId = resolved || "?";
 
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || "")) ? body.date : localDate();
     const result = await addApplePayRow({ cardId, name, amount, date, usuario: who });
-    return reply(200, result.duplicate ? "duplicate" : "ok", { ok: true, id: result.id, duplicate: result.duplicate });
+    return reply(200, result.duplicate ? "duplicate" : resolved ? "ok" : "ok_sin_tarjeta", { ok: true, id: result.id, duplicate: result.duplicate, card: resolved || null });
   } catch (err) {
     return reply(500, "error: " + String(err.message).slice(0, 80), { error: err.message });
   }
