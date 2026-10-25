@@ -601,13 +601,12 @@ function App() {
     if (!cards.length) return;
     // The card marked as main (kept on this device) goes first; otherwise the first one.
     const main = cards.find(c => c.id === defaultCardId)?.id || cards[0].id;
-    if (!activeCard) setActiveCard(main);
+    if (!activeCard) setActiveCard("all");
     if (!formAccount) setFormAccount(main);
   }, [cards]);
   function makeMainCard(id) {
     try { localStorage.setItem("bolsillo_default_card", id); } catch { /* storage unavailable */ }
     setDefaultCardId(id);
-    setActiveCard(id);
     setFormAccount(id);
     showToast("Tarjeta principal: " + (cards.find(c => c.id === id)?.nombre || ""));
   }
@@ -621,6 +620,7 @@ function App() {
 
   function cardName(accountId) {
     if (accountId === "debit") return "Debito";
+    if (accountId === "all") return "Todas";
     if (accountId === "?") return "¿Tarjeta?";   // an Apple Pay payment whose card Bolsillo couldn't tell
     return cards.find(c => c.id === accountId)?.nombre || "Tarjeta";
   }
@@ -787,7 +787,7 @@ function App() {
       });
   }
   function addRecurringToList(rec) {
-    const cardId = (activeCard && activeCard !== "debit") ? activeCard : (cards[0]?.id || "discover");
+    const cardId = (activeCard && activeCard !== "debit" && activeCard !== "all") ? activeCard : mainCardId;
     const expense = {
       id: `${cardId}-${Date.now()}`,
       sheetId: null,
@@ -904,7 +904,7 @@ function App() {
   }
 
   function markAllAdded() {
-    const pending = expenses.filter(e=>e.account===activeCard && !e.added);
+    const pending = expenses.filter(e => (activeCard === "all" ? e.account !== "debit" : e.account === activeCard) && !e.added);
     if (!pending.length) return;
     bulkToggle(pending, "added", `${pending.length} gastos marcados como ingresados`);
   }
@@ -1293,8 +1293,11 @@ function App() {
 
   // "Gastos"/ciclo/Resumen son exclusivos de la tarjeta Discover (credit);
   // los gastos de debito viven aparte y solo se unen de nuevo en "Me deben".
+  const isAll = activeCard === "all";
+  const mainCardId = cards.find(c => c.id === defaultCardId)?.id || cards[0]?.id || "discover";
+  const addTo = (!activeCard || isAll) ? mainCardId : activeCard;   // where the "+" button files a new expense
   const activeCardObj = cards.find(c => c.id === activeCard);
-  const cardExpenses = (activeCard && activeCard !== "debit") ? expenses.filter(e => e.account === activeCard) : [];
+  const cardExpenses = isAll ? expenses : ((activeCard && activeCard !== "debit") ? expenses.filter(e => e.account === activeCard) : []);
   const recommendations = useMemo(() => computeRecommendations(cards, rules, expenses), [cards, rules, expenses]);
 
   // Bank transactions only show up for accounts mapped to a card.
@@ -1339,7 +1342,13 @@ function App() {
     activeCardObj?.cierreDay ? parseInt(activeCardObj.cierreDay, 10) : CLOSE_DAY,
     activeCardObj?.dueDay ? parseInt(activeCardObj.dueDay, 10) : DUE_DAY,
   );
-  const cycleExpenses = cardExpenses.filter(e => e.date >= cycle.start && e.date <= cycle.end);
+  // Every card has its own billing cycle; "Todas" adds up each card's current cycle.
+  const cycles = Object.fromEntries(cards.map(c => [c.id, getCycleInfo(c.cierreDay ? parseInt(c.cierreDay, 10) : CLOSE_DAY, c.dueDay ? parseInt(c.dueDay, 10) : DUE_DAY)]));
+  const inOwnCycle = e => { const cy = cycles[e.account]; return !!cy && e.date >= cy.start && e.date <= cy.end; };
+  const cycleExpenses = isAll ? expenses.filter(inOwnCycle) : cardExpenses.filter(e => e.date >= cycle.start && e.date <= cycle.end);
+  const cycleTotalOf = id => expenses.filter(e => e.account === id && inOwnCycle(e)).reduce((sum, e) => sum + e.amount, 0);
+  const debitMonthTotal = expenses.filter(e => e.account === "debit" && getMonth(e.date) === getMonth(today())).reduce((sum, e) => sum + e.amount, 0);
+  const allCyclesTotal = cards.reduce((sum, c) => sum + cycleTotalOf(c.id), 0);
   const cycleTotal = cycleExpenses.reduce((s,e)=>s+e.amount,0);
   const cyclePending = cycleExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0);
   const totalOwed = expenses.filter(e=>!e.paid).reduce((s,e)=>s+owedForExp(e),0);
@@ -1397,9 +1406,11 @@ function App() {
     const owedAmt = owedForExp(ex);
     const hasOwed = owedAmt > 0;
     const fullyDone = showAdded ? (ex.added && (!hasOwed || ex.paid)) : (hasOwed && ex.paid);
-    const inCycle = ex.account===activeCard && ex.date >= cycle.start && ex.date <= cycle.end;
+    const inCycle = inOwnCycle(ex);
     return (
-      <div key={ex.id} className={`tx ${fullyDone?"tx-dim":""}`} style={{borderLeft:`5px solid ${accountColor(ex.account)}`,paddingLeft:10}}>
+      <div key={ex.id} className={`tx ${fullyDone?"tx-dim":""}`}
+        style={{borderLeft:`5px solid ${accountColor(ex.account)}`,paddingLeft:10,paddingRight:10,borderRadius:12,borderBottom:"none",marginBottom:8,
+                background:`color-mix(in srgb, ${accountColor(ex.account)} 10%, #fff)`}}>
         <div className="tx-checks">
           {selectable && selectMode ? (
             <div className={`chk amber ${selectedIds.has(ex.id)?"on":""}`} style={{width:26,height:26}} onClick={()=>toggleSelect(ex.id)}>
@@ -1547,7 +1558,7 @@ function App() {
   const inboxCard = renderInbox();
 
   return (
-    <div style={{minHeight:"100vh",background: tab==="list" && activeCard ? `color-mix(in srgb, ${accountColor(activeCard)} 11%, #f1f5f9)` : "#f1f5f9",transition:"background .25s",fontFamily:"'DM Sans','Helvetica Neue',sans-serif",color:"#0f172a"}}>
+    <div style={{minHeight:"100vh",background:"#f1f5f9",fontFamily:"'DM Sans','Helvetica Neue',sans-serif",color:"#0f172a"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Playfair+Display:wght@700&display=swap');
         *{box-sizing:border-box;margin:0;padding:0;}
@@ -1619,6 +1630,11 @@ function App() {
         .card-total{text-align:right;}
         .card-total .serif{font-size:24px;font-weight:700;line-height:1;}
         .due-pill{display:inline-flex;margin-top:8px;padding:3px 9px;border-radius:20px;background:rgba(255,255,255,.18);font-size:10px;font-weight:700;letter-spacing:.3px;}
+        .all-hero{border-radius:20px;padding:18px 20px;color:#fff;background:linear-gradient(135deg,#1e293b,#0f172a);box-shadow:0 16px 30px -14px rgba(15,23,42,.5);}
+        .all-row{display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;color:#fff;font-family:inherit;font-size:13px;padding:7px 0;cursor:pointer;}
+        .chipcard{flex-shrink:0;display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:8px 14px;border-radius:14px;background:#fff;color:#334155;text-align:left;}
+        .chipcard span{font-size:11px;font-weight:600;opacity:.9;}
+        .chipcard b{font-size:13px;font-variant-numeric:tabular-nums;}
         .stack-hint{text-align:center;font-size:10.5px;color:#94a3b8;margin-bottom:14px;}
         .stack-hint b{color:#64748b;}
 
@@ -2269,63 +2285,90 @@ function App() {
         )}
 
         {tab==="list" && <>
-          <div className="card-stack">
-            <div className={`stack-card ${activeCard==="debit"?"front":"back"}`}
-              style={{background:"linear-gradient(135deg,#1e293b,#0f172a)"}}
-              onClick={()=>setActiveCard("debit")}>
-              <div className="card-row1">
-                <div><div className="card-brand">DEBITO · EFECTIVO</div><div className="card-chip"></div></div>
-                <div className="card-dots">•••</div>
-              </div>
-              <div className="card-row2">
-                <div>
-                  <div className="card-label">SIN CICLO</div>
-                  <div className="card-value">Se paga al momento</div>
+          <div className="card-stack" style={{height:isAll?"auto":150}}>
+            {isAll && (
+              <div className="all-hero">
+                <div className="card-label" style={{letterSpacing:1.5}}>TODAS LAS TARJETAS</div>
+                <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:10,marginTop:2}}>
+                  <div className="card-label">TOTAL DE LOS CICLOS</div>
+                  <div className="serif" style={{fontSize:28}}>{fmt(allCyclesTotal)}</div>
                 </div>
-                <div className="card-total">
-                  <div className="card-label">TOTAL DEBITO</div>
-                  <div className="serif">{fmt(debitTotal)}</div>
-                </div>
-              </div>
-            </div>
-            <div className={`stack-card ${activeCard!=="debit"?"front":"back"}`}
-              style={{background: activeCardObj?.color
-                ? `linear-gradient(135deg,${cycle.isUrgent?"#dc2626,#b91c1c":`${activeCardObj.color},${activeCardObj.color}`})`
-                : `linear-gradient(135deg,${cycle.isUrgent?"#dc2626,#b91c1c":"#0f4c81,#1e6ab0"})`}}
-              onClick={()=>setActiveCard(lastCreditCardRef.current || cards[0]?.id || "discover")}>
-              <div className="card-row1">
-                <div><div className="card-brand">{(activeCardObj?.nombre || "TARJETA").toUpperCase()}</div><div className="card-chip"></div></div>
-                <div className="card-dots">•••</div>
-              </div>
-              <div className="card-row2">
-                <div>
-                  <div className="card-label">CICLO CIERRA</div>
-                  <div className="card-value">{cycle.end}</div>
-                  {cycle.daysUntilDue <= 10 && (
-                    <div className="due-pill">Vence {cycle.due} · {cycle.daysUntilDue<=0?"VENCIDO":cycle.daysUntilDue===1?"Manana":`${cycle.daysUntilDue}d`}</div>
-                  )}
-                </div>
-                <div className="card-total">
-                  <div className="card-label">TOTAL CICLO</div>
-                  <div className="serif">{fmt(cycleTotal)}</div>
+                <div style={{marginTop:10,borderTop:"1px solid rgba(255,255,255,.18)",paddingTop:8}}>
+                  {cards.map(c => (
+                    <button key={c.id} type="button" className="all-row" onClick={()=>setActiveCard(c.id)}>
+                      <span style={{width:9,height:9,borderRadius:"50%",background:c.color||"#0f4c81",boxShadow:"0 0 0 2px rgba(255,255,255,.7)"}}></span>
+                      <span style={{flex:1,textAlign:"left"}}>{c.nombre}</span>
+                      <span style={{opacity:.75,fontSize:11}}>cierra {cycles[c.id]?.end?.slice(5)}</span>
+                      <b>{fmt(cycleTotalOf(c.id))}</b>
+                    </button>
+                  ))}
+                  <button type="button" className="all-row" onClick={()=>setActiveCard("debit")}>
+                    <span style={{width:9,height:9,borderRadius:"50%",background:"#475569",boxShadow:"0 0 0 2px rgba(255,255,255,.7)"}}></span>
+                    <span style={{flex:1,textAlign:"left"}}>Débito</span>
+                    <span style={{opacity:.75,fontSize:11}}>este mes</span>
+                    <b>{fmt(debitMonthTotal)}</b>
+                  </button>
                 </div>
               </div>
-            </div>
+            )}
+            {activeCard==="debit" && (
+              <div className="stack-card front" style={{background:"linear-gradient(135deg,#1e293b,#0f172a)",transform:"none",cursor:"default"}}>
+                <div className="card-row1">
+                  <div><div className="card-brand">DEBITO · EFECTIVO</div><div className="card-chip"></div></div>
+                  <div className="card-dots">•••</div>
+                </div>
+                <div className="card-row2">
+                  <div>
+                    <div className="card-label">SIN CICLO</div>
+                    <div className="card-value">Se paga al momento</div>
+                  </div>
+                  <div className="card-total">
+                    <div className="card-label">TOTAL DEBITO</div>
+                    <div className="serif">{fmt(debitTotal)}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+            {!isAll && activeCard!=="debit" && (
+              <div className="stack-card front"
+                style={{transform:"none",cursor:"default",background: activeCardObj?.color
+                  ? `linear-gradient(135deg,${cycle.isUrgent?"#dc2626,#b91c1c":`${activeCardObj.color},${activeCardObj.color}`})`
+                  : `linear-gradient(135deg,${cycle.isUrgent?"#dc2626,#b91c1c":"#0f4c81,#1e6ab0"})`}}>
+                <div className="card-row1">
+                  <div><div className="card-brand">{(activeCardObj?.nombre || "TARJETA").toUpperCase()}</div><div className="card-chip"></div></div>
+                  <div className="card-dots">•••</div>
+                </div>
+                <div className="card-row2">
+                  <div>
+                    <div className="card-label">CICLO CIERRA</div>
+                    <div className="card-value">{cycle.end}</div>
+                    {cycle.daysUntilDue <= 10 && (
+                      <div className="due-pill">Vence {cycle.due} · {cycle.daysUntilDue<=0?"VENCIDO":cycle.daysUntilDue===1?"Manana":`${cycle.daysUntilDue}d`}</div>
+                    )}
+                  </div>
+                  <div className="card-total">
+                    <div className="card-label">TOTAL CICLO</div>
+                    <div className="serif">{fmt(cycleTotal)}</div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-          <div className="stack-hint">Toca la tarjeta de atras para cambiar a <b>{activeCard!=="debit"?"Debito":(activeCardObj?.nombre||"tu tarjeta")}</b></div>
 
-          <div style={{display:"flex",gap:8,overflowX:"auto",padding:"2px 2px 12px"}}>
-            {cards.map(c => (
-              <button key={c.id} className="tog" style={{flexShrink:0, background: activeCard===c.id ? (c.color||"#0f4c81") : "#f1f5f9", color: activeCard===c.id ? "#fff" : "#64748b"}}
+          <div style={{display:"flex",gap:8,overflowX:"auto",padding:"14px 2px 12px",scrollbarWidth:"none"}}>
+            {[{id:"all",nombre:"Todas",color:"#1e293b",total:allCyclesTotal},
+              ...cards.map(c => ({id:c.id,nombre:c.nombre,color:c.color||"#0f4c81",total:cycleTotalOf(c.id)})),
+              {id:"debit",nombre:"Débito",color:"#475569",total:debitMonthTotal}].map(c => (
+              <button key={c.id} className="tog chipcard" style={activeCard===c.id ? {background:c.color,color:"#fff",boxShadow:`0 6px 14px -6px ${c.color}`} : {borderLeft:`6px solid ${c.color}`}}
                 onClick={()=>setActiveCard(c.id)}>
-                {c.nombre}
+                <span>{c.nombre}</span><b>{fmt(c.total)}</b>
               </button>
             ))}
             <button className="tog" style={{flexShrink:0}} onClick={()=>setShowCardsModal(true)}>⚙️ Tarjetas</button>
           </div>
 
           <div className="quick">
-            <button className="qbtn" onClick={()=>startAdd(activeCard)}><span className="qicon">➕</span><span>Agregar</span></button>
+            <button className="qbtn" onClick={()=>startAdd(addTo)}><span className="qicon">➕</span><span>Agregar</span></button>
             <button className="qbtn" onClick={()=>setTab("medeben")}><span className="qicon">🤝</span><span>Me deben</span></button>
             <button className="qbtn" onClick={()=>shareSelected(meDeben)}><span className="qicon">📤</span><span>Compartir</span></button>
             <button className="qbtn" onClick={loadAll}><span className="qicon">🔄</span><span>Sync</span></button>
@@ -2424,7 +2467,7 @@ function App() {
                 {filteredGroups.map(group => (
                   <div key={group.date}>
                     <div className="day-head"><span>{dayHeaderLabel(group.date)}</span><span>{fmt(group.total)}</span></div>
-                    {group.items.map(ex => ExpenseRow(ex, {showAdded:true}))}
+                    {group.items.map(ex => ExpenseRow(ex, {showAdded: ex.account !== "debit", showSource: isAll}))}
                   </div>
                 ))}
                 {cardExpenses.some(e=>!e.added) && (
@@ -2706,7 +2749,7 @@ function App() {
         </div>
       )}
 
-      <button className="fab" aria-label="Agregar gasto" onClick={()=>startAdd(activeCard)}>+</button>
+      <button className="fab" aria-label="Agregar gasto" onClick={()=>startAdd(addTo)}>+</button>
 
       {toast && <div className={`toast ${toast.type==="warn"?"twarn":"tok"}`}>{toast.msg}</div>}
     </div>
