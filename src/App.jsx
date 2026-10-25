@@ -616,6 +616,9 @@ function App() {
     if (activeCard && activeCard !== "debit") lastCreditCardRef.current = activeCard;
   }, [activeCard]);
 
+  // Each card keeps its own colour everywhere it shows up, so two cards can't be mistaken for each other.
+  const accountColor = id => id === "debit" ? "#475569" : (cards.find(c => c.id === id)?.color || "#0f4c81");
+
   function cardName(accountId) {
     if (accountId === "debit") return "Debito";
     if (accountId === "?") return "¿Tarjeta?";   // an Apple Pay payment whose card Bolsillo couldn't tell
@@ -1396,7 +1399,7 @@ function App() {
     const fullyDone = showAdded ? (ex.added && (!hasOwed || ex.paid)) : (hasOwed && ex.paid);
     const inCycle = ex.account===activeCard && ex.date >= cycle.start && ex.date <= cycle.end;
     return (
-      <div key={ex.id} className={`tx ${fullyDone?"tx-dim":""}`}>
+      <div key={ex.id} className={`tx ${fullyDone?"tx-dim":""}`} style={{borderLeft:`5px solid ${accountColor(ex.account)}`,paddingLeft:10}}>
         <div className="tx-checks">
           {selectable && selectMode ? (
             <div className={`chk amber ${selectedIds.has(ex.id)?"on":""}`} style={{width:26,height:26}} onClick={()=>toggleSelect(ex.id)}>
@@ -1500,7 +1503,7 @@ function App() {
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
                     <div style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
-                      <span>{r.date} · {cardName(inboxCardOf(r))}</span>
+                      <span>{r.date} · <span style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:accountColor(inboxCardOf(r)),marginRight:4}}></span>{cardName(inboxCardOf(r))}</span>
                       {r.pending && r.status !== "ajuste" && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>En proceso</span>}
                       {r.transfer && <span className="badge badge-gray" style={{fontSize:8,padding:"1px 6px"}}>Transferencia</span>}
                       {r.applepay && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>Apple Pay</span>}
@@ -1544,7 +1547,7 @@ function App() {
   const inboxCard = renderInbox();
 
   return (
-    <div style={{minHeight:"100vh",background:"#f1f5f9",fontFamily:"'DM Sans','Helvetica Neue',sans-serif",color:"#0f172a"}}>
+    <div style={{minHeight:"100vh",background: tab==="list" && activeCard ? `color-mix(in srgb, ${accountColor(activeCard)} 11%, #f1f5f9)` : "#f1f5f9",transition:"background .25s",fontFamily:"'DM Sans','Helvetica Neue',sans-serif",color:"#0f172a"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Playfair+Display:wght@700&display=swap');
         *{box-sizing:border-box;margin:0;padding:0;}
@@ -1656,10 +1659,11 @@ function App() {
 
         /* ---- Nuevo gasto: receipt preview + category grid ---- */
         .acct-toggle{display:flex;gap:8px;margin-bottom:16px;}
-        .acct-btn{flex:1;padding:10px;border-radius:12px;border:1.5px solid #e2e8f0;background:#fff;font-family:inherit;font-size:12.5px;font-weight:700;color:#64748b;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;}
+        .acct-btn{flex:1;padding:13px 10px;border-radius:12px;border:1.5px solid #e2e8f0;background:#fff;font-family:inherit;font-size:12.5px;font-weight:700;color:#64748b;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;}
         .acct-btn.on.discover{border-color:#0f4c81;background:#eff6ff;color:#0f4c81;}
         .acct-btn.on.debito{border-color:#0f172a;background:#f1f5f9;color:#0f172a;}
-        .acct-dot{width:7px;height:7px;border-radius:50%;}
+        .acct-dot{width:8px;height:8px;border-radius:50%;}
+        .acct-btn.on .acct-dot{background:#fff!important;}
         .receipt{border-radius:16px;padding:16px 18px;background:#fff;border:1.5px solid #e2e8f0;box-shadow:0 1px 3px rgba(15,23,42,.05);margin-bottom:16px;}
         .receipt-top{display:flex;align-items:center;gap:12px;}
         .receipt-ico{width:44px;height:44px;border-radius:13px;background:#fffbeb;border:1px solid #fde68a;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0;}
@@ -2060,9 +2064,12 @@ function App() {
 
       {showForm && (
         <div className="overlay" onClick={cancelEdit}>
-          <div className="sheet" onClick={e=>e.stopPropagation()}>
+          <div className="sheet" style={{borderTop:`10px solid ${accountColor(formAccount)}`}} onClick={e=>e.stopPropagation()}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-              <div style={{fontSize:16,fontWeight:700,color:editId?"#0f4c81":"#0f172a"}}>{editId?"Editar gasto":"Nuevo gasto"}</div>
+              <div style={{fontSize:16,fontWeight:700,color:editId?"#0f4c81":"#0f172a",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                {editId?"Editar gasto":"Nuevo gasto"}
+                <span style={{background:accountColor(formAccount),color:"#fff",borderRadius:99,padding:"3px 12px",fontSize:12,fontWeight:700}}>{cardName(formAccount)}</span>
+              </div>
               <button className="btn btn-g btn-sm" onClick={cancelEdit}>X</button>
             </div>
             {adjustNote && <div style={{padding:"8px 10px",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:10,fontSize:12,color:"#b91c1c",marginBottom:14}}>💱 {adjustNote}</div>}
@@ -2071,13 +2078,15 @@ function App() {
               <div className="acct-toggle" style={{flexWrap:"wrap"}}>
                 {cards.map(c => (
                   <button key={c.id} type="button" className={`acct-btn ${formAccount===c.id?"on":""}`}
-                    style={formAccount===c.id ? {borderColor:c.color||"#0f4c81", background:"#eff6ff", color:c.color||"#0f4c81"} : undefined}
+                    style={formAccount===c.id ? {borderColor:c.color||"#0f4c81", background:c.color||"#0f4c81", color:"#fff", boxShadow:`0 6px 14px -6px ${c.color||"#0f4c81"}`} : {borderLeft:`6px solid ${c.color||"#0f4c81"}`}}
                     onClick={()=>setFormAccount(c.id)}>
                     <span className="acct-dot" style={{background:c.color||"#0f4c81"}}></span>{c.nombre}
                   </button>
                 ))}
-                <button type="button" className={`acct-btn debito ${formAccount==="debit"?"on":""}`} onClick={()=>setFormAccount("debit")}>
-                  <span className="acct-dot" style={{background:"#0f172a"}}></span>Debito
+                <button type="button" className={`acct-btn debito ${formAccount==="debit"?"on":""}`}
+                  style={formAccount==="debit" ? {borderColor:"#475569", background:"#475569", color:"#fff", boxShadow:"0 6px 14px -6px #475569"} : {borderLeft:"6px solid #475569"}}
+                  onClick={()=>setFormAccount("debit")}>
+                  <span className="acct-dot" style={{background:formAccount==="debit"?"#fff":"#475569"}}></span>Debito
                 </button>
               </div>
             )}
@@ -2223,7 +2232,7 @@ function App() {
             </div>
             <div>
               <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700,letterSpacing:-.3,lineHeight:1}}>Bolsillo</div>
-              <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,fontWeight:600}}>{(NAV.find(n=>n.id===tab)?.label || "").toUpperCase()}{hideNums ? " · NÚMEROS OCULTOS" : ""}</div>
+              <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,fontWeight:600}}>{(NAV.find(n=>n.id===tab)?.label || "").toUpperCase()}{tab==="list" && activeCard ? ` · ${cardName(activeCard).toUpperCase()}` : ""}{hideNums ? " · NÚMEROS OCULTOS" : ""}</div>
             </div>
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
