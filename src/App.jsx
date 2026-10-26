@@ -740,6 +740,7 @@ function App() {
   function submitForm(e) {
     e.preventDefault();
     if (!form.desc.trim()||!form.amount) return;
+    if (!editId && !formAccount) { showToast("Elige con qué tarjeta fue", "warn"); return; }
     const base = parseFloat(form.amount);
     const convertedOwed = form.owed.filter(p=>p.value).map(p=>({
       name: p.name||"", type:"fixed", value:String(calcOwedAmt(p,base).toFixed(2)),
@@ -1177,11 +1178,13 @@ function App() {
     }
   }
   function startImport(row) {
-    const cardId = inboxCardOf(row);
+    const cardId = inboxShownCard(row);
     setEditId(null);
     setImportTxId(row.txId);
     // A payment with an unrecognised card starts on the main card; it can be changed in the form.
-    setFormAccount(cards.some(c => c.id === cardId) ? cardId : (cards.some(c => c.id === defaultCardId) ? defaultCardId : (cards[0]?.id || "debit")));
+    // Starts on the card the payment really came from (Wallet's own card name, or a mapped bank account);
+    // an Apple Pay payment whose card was only a guess in the Shortcut starts on the main card instead.
+    setFormAccount(cards.some(c => c.id === cardId) ? cardId : mainCardId);
     // Apple Pay payments arrive without a category; reuse the one last used for the same name.
     const category = row.category || categoryByName[row.name.trim().toLowerCase()] || "";
     setForm({ ...EMPTY_FORM, desc: row.name, amount: String(row.amount), date: row.date, category, by: row.usuario || "" });
@@ -1305,6 +1308,9 @@ function App() {
   // Apple Pay payments belong straight to a Bolsillo card ("card:<id>"); bank
   // transactions belong to a Plaid account that has to be mapped to one.
   const inboxCardOf = r => String(r.accountId).startsWith("card:") ? String(r.accountId).slice(5) : mappedCard[r.accountId];
+  // An Apple Pay row's card is trusted only when Wallet reported it; otherwise it shows (and imports) as the main card.
+  const inboxGuessed = r => !!r.applepay && r.cardSource !== "wallet";
+  const inboxShownCard = r => inboxGuessed(r) ? mainCardId : inboxCardOf(r);
   const inboxRows = plaid.inbox.filter(r => inboxCardOf(r));
   // Finds an expense already entered by hand that this bank transaction might
   // duplicate: same amount within 3 days, or a similar name with an amount
@@ -1509,12 +1515,14 @@ function App() {
               ))}
               {inboxView.length === 0 && <div style={{fontSize:12,color:"#94a3b8",padding:"6px 0"}}>Todo al dia ✓</div>}
               {inboxView.slice(0,10).map(r => (
-                <div key={r.txId} style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,padding:"8px 0",borderBottom:"1px solid #f1f5f9"}}>
+                <div key={r.txId} style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,padding:"10px 10px 10px 12px",marginBottom:8,borderRadius:12,
+                  borderLeft:`5px solid ${accountColor(inboxShownCard(r))}`,background:`color-mix(in srgb, ${accountColor(inboxShownCard(r))} 11%, #fff)`}}>
                   <div style={{fontSize:18,width:22,textAlign:"center"}}>{CAT_EMOJI[r.category]||"📦"}</div>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
                     <div style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
-                      <span>{r.date} · <span style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:accountColor(inboxCardOf(r)),marginRight:4}}></span>{cardName(inboxCardOf(r))}</span>
+                      <span>{r.date}</span>
+                      <span style={{background:accountColor(inboxShownCard(r)),color:"#fff",borderRadius:99,padding:"1px 9px",fontSize:10,fontWeight:700,whiteSpace:"nowrap"}}>{cardName(inboxShownCard(r))}{inboxGuessed(r) ? " · por defecto" : ""}</span>
                       {r.pending && r.status !== "ajuste" && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>En proceso</span>}
                       {r.transfer && <span className="badge badge-gray" style={{fontSize:8,padding:"1px 6px"}}>Transferencia</span>}
                       {r.applepay && <span className="badge badge-blue" style={{fontSize:8,padding:"1px 6px"}}>Apple Pay</span>}
@@ -2080,11 +2088,11 @@ function App() {
 
       {showForm && (
         <div className="overlay" onClick={cancelEdit}>
-          <div className="sheet" style={{borderTop:`10px solid ${accountColor(formAccount)}`}} onClick={e=>e.stopPropagation()}>
+          <div className="sheet" style={{borderTop:`10px solid ${formAccount ? accountColor(formAccount) : "#f59e0b"}`,background:formAccount ? `color-mix(in srgb, ${accountColor(formAccount)} 13%, #fff)` : "#fffbeb",transition:"background .2s"}} onClick={e=>e.stopPropagation()}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
               <div style={{fontSize:16,fontWeight:700,color:editId?"#0f4c81":"#0f172a",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                 {editId?"Editar gasto":"Nuevo gasto"}
-                <span style={{background:accountColor(formAccount),color:"#fff",borderRadius:99,padding:"3px 12px",fontSize:12,fontWeight:700}}>{cardName(formAccount)}</span>
+                <span style={{background:formAccount ? accountColor(formAccount) : "#f59e0b",color:"#fff",borderRadius:99,padding:"3px 12px",fontSize:12,fontWeight:700}}>{formAccount ? cardName(formAccount) : "¿Qué tarjeta?"}</span>
               </div>
               <button className="btn btn-g btn-sm" onClick={cancelEdit}>X</button>
             </div>

@@ -94,11 +94,14 @@ export default async function handler(req, res) {
     const cards = await listCards();
     // The card Wallet reports wins; the Shortcut's fixed "account" (if any) is only the fallback.
     // If neither is recognised the payment is still kept: it goes to "Por revisar" marked "¿Tarjeta?".
-    const resolved = resolveCard(cards, body.card, body.Card, body.cardName, body.account);
+    const fromWallet = resolveCard(cards, body.card, body.Card, body.cardName);
+    const fromFixed = fromWallet ? null : resolveCard(cards, body.account);
+    const resolved = fromWallet || fromFixed;
     const cardId = resolved || "?";
+    const origen = fromWallet ? "wallet" : fromFixed ? "fija" : "";   // a fixed card in the Shortcut is a guess: the app asks to confirm it
 
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || "")) ? body.date : localDate();
-    const result = await addApplePayRow({ cardId, name, amount, date, usuario: who });
+    const result = await addApplePayRow({ cardId, name, amount, date, usuario: who, origen });
     return reply(200, result.duplicate ? "duplicate" : resolved ? "ok" : "ok_sin_tarjeta", { ok: true, id: result.id, duplicate: result.duplicate, card: resolved || null });
   } catch (err) {
     return reply(500, "error: " + String(err.message).slice(0, 80), { error: err.message });
