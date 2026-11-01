@@ -608,6 +608,8 @@ function App() {
     try { localStorage.setItem("bolsillo_default_card", id); } catch { /* storage unavailable */ }
     setDefaultCardId(id);
     setFormAccount(id);
+    fetchWithTimeout(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ action:"settings-set", tarjetaPrincipal: id }) })
+      .catch(() => showToast("No se pudo guardar la tarjeta principal para todos", "warn"));
     showToast("Tarjeta principal: " + (cards.find(c => c.id === id)?.nombre || ""));
   }
 
@@ -643,6 +645,17 @@ function App() {
     setLoading(true); setStatus("idle");
     // Who am I and what can I do (the server also logs out anyone who's been blocked: a 401 here does it).
     fetchWithTimeout("/api/auth?action=me").then(r => r.ok ? r.json() : null).then(d => { if (d?.userLabel) setMe(d); }).catch(() => {});
+    // The main card is a household setting (the server uses it for Apple Pay payments too). A device that
+    // already had one picked passes it on the first time, when the server has none.
+    fetchWithTimeout(`${SCRIPT_URL}?action=settings-get`).then(r => r.ok ? r.json() : null).then(d => {
+      if (!d) return;
+      const id = d.settings?.tarjetaPrincipal;
+      if (id) { try { localStorage.setItem("bolsillo_default_card", id); } catch { /* storage unavailable */ } setDefaultCardId(id); }
+      else {
+        let local = ""; try { local = localStorage.getItem("bolsillo_default_card") || ""; } catch { /* storage unavailable */ }
+        if (local) fetchWithTimeout(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ action:"settings-set", tarjetaPrincipal: local }) }).catch(() => {});
+      }
+    }).catch(() => {});
     try {
       // Cards need to be known before we can fire one read per card, so this
       // one goes first; everything else (debito, recurring, and each card's
@@ -1514,7 +1527,7 @@ function App() {
                 </div>
               ))}
               {inboxView.length === 0 && <div style={{fontSize:12,color:"#94a3b8",padding:"6px 0"}}>Todo al dia ✓</div>}
-              {inboxView.slice(0,10).map(r => (
+              {inboxView.map(r => (
                 <div key={r.txId} style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,padding:"10px 10px 10px 12px",marginBottom:8,borderRadius:12,
                   borderLeft:`5px solid ${accountColor(inboxShownCard(r))}`,background:`color-mix(in srgb, ${accountColor(inboxShownCard(r))} 11%, #fff)`}}>
                   <div style={{fontSize:18,width:22,textAlign:"center"}}>{CAT_EMOJI[r.category]||"📦"}</div>
@@ -1559,7 +1572,6 @@ function App() {
                   )}
                 </div>
               ))}
-              {inboxView.length > 10 && <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>y {inboxView.length-10} mas</div>}
               </>)}
             </div>
           );

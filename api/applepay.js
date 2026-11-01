@@ -2,6 +2,7 @@ import { timingSafeEqual } from "crypto";
 import { listCards } from "../lib/cardsStore.js";
 import { addApplePayRow, logApplePay } from "../lib/plaidStore.js";
 import { userForApplePayKey, listUsers } from "../lib/usersStore.js";
+import { getSettings } from "../lib/settingsStore.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -95,10 +96,14 @@ export default async function handler(req, res) {
     // The card Wallet reports wins; the Shortcut's fixed "account" (if any) is only the fallback.
     // If neither is recognised the payment is still kept: it goes to "Por revisar" marked "¿Tarjeta?".
     const fromWallet = resolveCard(cards, body.card, body.Card, body.cardName);
-    const fromFixed = fromWallet ? null : resolveCard(cards, body.account);
-    const resolved = fromWallet || fromFixed;
+    // Wallet's own card name is the only reliable source. Without it the payment goes to the household's main card
+    // (setting "tarjetaPrincipal"), and only if none is set to the Shortcut's fixed one. Either way it can be changed on review.
+    let principal = null;
+    if (!fromWallet) { try { principal = resolveCard(cards, (await getSettings()).tarjetaPrincipal); } catch (e) { console.warn("settings unavailable", e.message); } }
+    const fromFixed = (fromWallet || principal) ? null : resolveCard(cards, body.account);
+    const resolved = fromWallet || principal || fromFixed;
     const cardId = resolved || "?";
-    const origen = fromWallet ? "wallet" : fromFixed ? "fija" : "";   // a fixed card in the Shortcut is a guess: the app asks to confirm it
+    const origen = fromWallet ? "wallet" : principal ? "defecto" : fromFixed ? "fija" : "";
 
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || "")) ? body.date : localDate();
     const result = await addApplePayRow({ cardId, name, amount, date, usuario: who, origen });
