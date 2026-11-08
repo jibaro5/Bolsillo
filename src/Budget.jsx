@@ -478,16 +478,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
                               onPointerDown={e => startDrag(e, r)} onClick={e => e.stopPropagation()}>⋮⋮</span>
                           )}
                           {r.nombre}{searching && !found.direct.some(d => d.id === r.id) && <span className="sub" style={{ color: "#0f4c81" }}>Relacionado</span>}
-                          {r.measured && period && (
-                            <>
-                              <span className="sub">Gastado {fmt(r.spent)}</span>
-                              <span className="sub" style={r.status === "over" ? { color: "#dc2626", fontWeight: 700 } : undefined}>
-                                {r.status === "over" ? `Te pasaste ${fmt(r.spent - r.budget)}` : `Quedan ${fmt(r.budget - r.spent)}`}
-                              </span>
-                              <div className="bd-bar" style={{ marginTop: 4, height: 4 }}><div style={{ width: `${Math.min(100, r.budget > 0 ? (r.spent / r.budget) * 100 : (r.spent > 0 ? 100 : 0))}%`, background: STATUS_COLOR[r.status] }} /></div>
-                            </>
-                          )}
-                          {!r.measured && r.nota && <span className="sub">{r.nota}</span>}
+                          {r.nota && <span className="sub">{r.nota}</span>}
                         </td>
                         <Nums vals={r.amounts} fmt={fmt} dim={r.anual <= 0} />
                       </tr>
