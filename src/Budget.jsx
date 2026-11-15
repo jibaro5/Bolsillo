@@ -126,6 +126,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
   const esencialesAnual = lines.filter(l => l.grupo === "esencial").reduce((sum, l) => sum + (Number(l.anual) || 0), 0);
   const esencialesMes = lineAmount(esencialesAnual, "mensual");
   const fondoSugerido = Math.round(esencialesMes * fondoMeses * 100) / 100;
+  const [fijoOpen, setFijoOpen] = useState(false);
   const fijoRows = rows.filter(r => r.fijo);
   const fijoAnual = fijoRows.reduce((sum, r) => sum + (Number(r.anual) || 0), 0);
   const searching = q.trim().length > 0;
@@ -314,6 +315,13 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
     .bd-t tr.bd-sub td{font-weight:700;background:#eef2f7!important;border-top:1px solid #94a3b8;}
     .bd-tr{cursor:pointer;}
     .bd-tr:active td{background:#e2e8f0!important;}
+    .bd-tag{margin-left:6px;font-size:10px;font-weight:700;color:#0f4c81;background:#eff6ff;border-radius:99px;padding:1px 7px;white-space:nowrap;}
+    .bd-switchrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;margin-bottom:12px;border:1.5px solid #e2e8f0;border-radius:12px;background:#f8fafc;}
+    .bd-switch{position:relative;flex-shrink:0;width:52px;height:30px;border-radius:99px;border:none;background:#cbd5e1;cursor:pointer;transition:background .2s;padding:0;}
+    .bd-switch span{position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .2s;}
+    .bd-switch.on{background:#0f4c81;}
+    .bd-switch.on span{transform:translateX(22px);}
+    .bd-switch:focus-visible{outline:2px solid #0f4c81;outline-offset:2px;}
     .bd-pill{display:inline-flex;align-items:center;gap:4px;padding:6px 10px;border-radius:99px;border:1.5px solid #e2e8f0;background:#fff;font-size:12px;font-weight:600;color:#64748b;cursor:pointer;font-family:inherit;}
     .bd-pill.on{border-color:#0f4c81;background:#eff6ff;color:#0f4c81;}
     .bd-pill:disabled{opacity:.45;cursor:not-allowed;}
@@ -437,23 +445,32 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
           )}
 
           {!searching && (
-            <table className="bd-t">
-              <thead>
-                <tr><th className="g" colSpan={4} style={{ background: "#f1f5f9", color: "#0f172a" }}>Gastos fijos</th></tr>
-                <ColHead />
-              </thead>
-              <tbody>
-                {fijoRows.length === 0 && (
-                  <tr><td colSpan={4} style={{ color: "#94a3b8", fontSize: 12, whiteSpace: "normal" }}>Marca una línea como gasto fijo desde su editor y aparece aquí.</td></tr>
-                )}
-                {fijoRows.map(r => (
-                  <tr key={r.id} className="bd-tr" onClick={() => openEdit(r)}><td>{r.nombre}</td><Nums vals={r.amounts} fmt={fmt} dim={r.anual <= 0} /></tr>
-                ))}
-                {fijoRows.length > 0 && <tr className="tot"><td>Total</td><Nums vals={amountsOf(fijoAnual)} fmt={fmt} /></tr>}
-              </tbody>
-            </table>
+            <div className="bd-card" style={{ padding: 14 }}>
+              <div style={{ fontSize: 11, letterSpacing: 1, fontWeight: 700, color: "#94a3b8", marginBottom: 6 }}>📌 GASTOS FIJOS</div>
+              <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(lineAmount(fijoAnual, "mensual"))} <span style={{ fontSize: 13, fontWeight: 500, color: "#64748b" }}>al mes</span></div>
+              <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
+                {fijoRows.length === 0
+                  ? "Marca una línea como gasto fijo desde su editor y aparece aquí."
+                  : `${fmt(lineAmount(fijoAnual, "bisemanal"))} bisemanal · ${fmt(fijoAnual)} al año · ${fijoRows.length} ${fijoRows.length === 1 ? "gasto" : "gastos"}`}
+              </div>
+              {fijoRows.length > 0 && (
+                <button onClick={() => setFijoOpen(o => !o)} aria-expanded={fijoOpen} style={{ marginTop: 8, border: "none", background: "none", color: "#0f4c81", fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0, fontFamily: "inherit" }}>
+                  {fijoOpen ? "Ocultar los gastos ▴" : "Ver los gastos ▾"}
+                </button>
+              )}
+              {fijoOpen && fijoRows.length > 0 && (
+                <table className="bd-t" style={{ marginTop: 10, marginBottom: 0 }}>
+                  <thead><ColHead /></thead>
+                  <tbody>
+                    {fijoRows.map(r => (
+                      <tr key={r.id} className="bd-tr" onClick={() => openEdit(r)}><td>{r.nombre}</td><Nums vals={r.amounts} fmt={fmt} dim={r.anual <= 0} /></tr>
+                    ))}
+                    <tr className="tot"><td>Total</td><Nums vals={amountsOf(fijoAnual)} fmt={fmt} /></tr>
+                  </tbody>
+                </table>
+              )}
+            </div>
           )}
-
           {searching && (
             <div style={{ fontSize: 12, color: "#64748b", margin: "0 2px 10px" }}>
               {shownIds.size === 0 ? `Sin resultados para “${q.trim()}”` : `${found.direct.length} resultado${found.direct.length !== 1 ? "s" : ""}${found.related.length ? ` · ${found.related.length} relacionado${found.related.length !== 1 ? "s" : ""}` : ""}`}
@@ -482,7 +499,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
                             <span className="bd-handle" role="button" aria-label={`Arrastrar ${r.nombre} para reordenar`}
                               onPointerDown={e => startDrag(e, r)} onClick={e => e.stopPropagation()}>⋮⋮</span>
                           )}
-                          {r.nombre}{searching && !found.direct.some(d => d.id === r.id) && <span className="sub" style={{ color: "#0f4c81" }}>Relacionado</span>}
+                          {r.nombre}{r.fijo && <span className="bd-tag">📌 fijo</span>}{searching && !found.direct.some(d => d.id === r.id) && <span className="sub" style={{ color: "#0f4c81" }}>Relacionado</span>}
                           {r.nota && <span className="sub">{r.nota}</span>}
                         </td>
                         <Nums vals={r.amounts} fmt={fmt} dim={r.anual <= 0} />
@@ -517,6 +534,15 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
               </select>
             </div>
 
+            <div className="bd-switchrow">
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>Gasto fijo</div>
+                <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{form.fijo ? "Suma al cuadro de Gastos fijos" : "No suma al cuadro de Gastos fijos"}</div>
+              </div>
+              <button type="button" role="switch" aria-checked={!!form.fijo} aria-label="Gasto fijo" className={`bd-switch ${form.fijo ? "on" : ""}`}
+                onClick={() => setForm(f => ({ ...f, fijo: !f.fijo }))}><span /></button>
+            </div>
+
             <div className="field"><label>Monto</label>
               <div style={{ display: "flex", gap: 8 }}>
                 {KINDS.map(k => (
@@ -529,12 +555,6 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
               <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 6 }}>Cambia cualquiera de los tres y los otros se ajustan solos (anual ÷ 12 = mensual, anual ÷ 26 = bisemanal).</div>
             </div>
 
-            <label className="field" style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
-              <input type="checkbox" checked={!!form.fijo} onChange={e => setForm(f => ({ ...f, fijo: e.target.checked }))} style={{ width: 20, height: 20, accentColor: "#0f4c81", flexShrink: 0 }} />
-              <span style={{ fontSize: 14, fontWeight: 600 }}>Es un gasto fijo
-                <span style={{ display: "block", fontSize: 10.5, fontWeight: 500, color: "#94a3b8", marginTop: 2 }}>Suma al cuadro "Gastos fijos" que está debajo del fondo de emergencia.</span>
-              </span>
-            </label>
 
             <div className="field"><label>Nota (opcional)</label>
               <input className="inp" value={form.nota} onChange={e => setForm(f => ({ ...f, nota: e.target.value }))} placeholder="Ej. se paga el 1 de cada mes" />
