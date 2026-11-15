@@ -5,6 +5,7 @@ import { listRules, addRule, editRule, deleteRule } from "../lib/rewardsStore.js
 import { listLines, addLine, editLine, deleteLine, reorderLines, listIncomes, setIncomes, getConfig, setConfig } from "../lib/budgetStore.js";
 import { rebuildBudgetView, refreshBudgetView } from "../lib/budgetView.js";
 import { getSettings, setSetting } from "../lib/settingsStore.js";
+import { listPagos, addPago, deletePago } from "../lib/pagosStore.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -244,6 +245,15 @@ export default async function handler(req, res) {
     else if (action === "rules-edit") { await editRule(body.id, body); result = { ok:true }; }
     else if (action === "rules-delete") { await deleteRule(body.id); result = { ok:true }; }
 
+    else if (action === "pagos-list") result = { pagos: await listPagos() };
+    else if (action === "pagos-add") {
+      try { result = { ok:true, ...(await addPago(body, me)) }; }
+      catch (err) {
+        if (["id_invalido", "card_not_found", "fecha_invalida", "monto_invalido"].includes(err.message)) return res.status(400).json({ error: err.message });
+        throw err;
+      }
+    }
+    else if (action === "pagos-delete") { await deletePago(String(body.id || "")); result = { ok:true }; }
     else if (action === "settings-get") result = { settings: await getSettings() };
     else if (action === "settings-set") {
       const id = String(body.tarjetaPrincipal || "");

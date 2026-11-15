@@ -735,7 +735,7 @@ function App() {
   }
 
   function openPay() {
-    setPayForm({ cardId: (activeCard && activeCard !== "all") ? activeCard : "all", amount:"", date:today(), note:"" });
+    setPayForm({ cardId: (activeCard && activeCard !== "all") ? activeCard : "", amount:"", date:today(), note:"" });
     setShowPay(true);
   }
   function addPayment(e) {
@@ -1412,17 +1412,9 @@ function App() {
   const cycleTotalOf = id => expenses.filter(e => e.account === id && inOwnCycle(e)).reduce((sum, e) => sum + e.amount, 0);
   const allCyclesTotal = cards.reduce((sum, c) => sum + cycleTotalOf(c.id), 0);
   // Pagos hechos dentro del ciclo de su tarjeta; se restan de lo que se debe.
-  // Un pago general (cardId "all", hecho desde "Todas") no es de ninguna tarjeta: solo baja los totales de "Todas",
-  // y cuenta si cae dentro de la ventana que abarcan los ciclos actuales de todas las tarjetas.
-  const allStart = cards.map(c => cycles[c.id]?.start).filter(Boolean).sort()[0] || "";
-  const allEnd = cards.map(c => cycles[c.id]?.end).filter(Boolean).sort().slice(-1)[0] || "";
-  const payInCycle = p => {
-    if (p.cardId === "all") return !!allStart && p.date >= allStart && p.date <= allEnd;
-    const cy = cycles[p.cardId]; return !!cy && p.date >= cy.start && p.date <= cy.end;
-  };
+  const payInCycle = p => { const cy = cycles[p.cardId]; return !!cy && p.date >= cy.start && p.date <= cy.end; };
   const paidIn = id => payments.filter(p => p.cardId === id && payInCycle(p)).reduce((sum, p) => sum + p.amount, 0);
-  const generalPaid = paidIn("all");
-  const allPaid = cards.reduce((sum, c) => sum + paidIn(c.id), 0) + generalPaid;
+  const allPaid = cards.reduce((sum, c) => sum + paidIn(c.id), 0);
   // Lo que se muestra de los pagos de un grupo de tarjetas: por pagar (lo que se debía justo antes del último pago),
   // el último pago y lo que queda. Con un solo pago o ninguno, "por pagar" es el total del ciclo.
   const paySummary = (ids, total) => {
@@ -1433,7 +1425,7 @@ function App() {
     return { list, last, porPagar: total - (paidAll - (last?.amount || 0)), restante: total - paidAll };
   };
   const cycleTotal = cycleExpenses.reduce((s,e)=>s+e.amount,0);
-  const paySum = isAll ? paySummary([...cards.map(c => c.id), "all"], allCyclesTotal) : paySummary([activeCard], cycleTotal);
+  const paySum = isAll ? paySummary(cards.map(c => c.id), allCyclesTotal) : paySummary([activeCard], cycleTotal);
   const cyclePending = cycleExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0);
   const totalOwed = expenses.filter(e=>!e.paid).reduce((s,e)=>s+owedForExp(e),0);
   const netCost = cycleExpenses.reduce((s,e)=>s+(e.amount-owedForExp(e)),0);
@@ -1718,6 +1710,9 @@ function App() {
         .pay-lbl{font-size:10px;letter-spacing:1.2px;font-weight:700;color:#64748b;}
         .pay-due{font-family:'Playfair Display',serif;font-size:24px;font-weight:700;color:#0f172a;line-height:1.2;}
         .pay-sub{font-size:11px;color:#64748b;margin-top:2px;}
+        .sel-wrap{position:relative;}
+        .sel-wrap .sel{appearance:none;-webkit-appearance:none;padding-right:38px;}
+        .sel-arrow{position:absolute;right:14px;top:50%;transform:translateY(-50%);pointer-events:none;color:#64748b;font-size:14px;}
         .pay-toggle{border:none;background:none;color:#0f4c81;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;padding:8px 4px;}
         .pay-list{margin-top:10px;border-top:1px solid #e2e8f0;padding-top:6px;}
         .pay-row{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:12px;color:#334155;}
@@ -2143,7 +2138,7 @@ function App() {
         <div className="modal-overlay" onClick={()=>setConfirmPay(null)}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
             <div style={{fontSize:11,letterSpacing:2,color:"#dc2626",marginBottom:12,fontWeight:700}}>BORRAR PAGO</div>
-            <div style={{fontSize:15,marginBottom:8,fontWeight:600}}>{fmt(confirmPay.amount)} · {confirmPay.date.slice(5)} · {confirmPay.cardId === "all" ? "Todas las tarjetas" : cardName(confirmPay.cardId)}</div>
+            <div style={{fontSize:15,marginBottom:8,fontWeight:600}}>{fmt(confirmPay.amount)} · {confirmPay.date.slice(5)} · {cardName(confirmPay.cardId)}</div>
             <div style={{fontSize:13,color:"#64748b",marginBottom:24}}>{confirmPay.by ? `Lo registró ${confirmPay.by}. ` : ""}Al borrarlo, lo que se debe vuelve a subir en ese monto.</div>
             <div style={{display:"flex",gap:8}}>
               <button className="btn btn-d" style={{flex:1}} onClick={()=>{ removePayment(confirmPay); setConfirmPay(null); }}>Si, borrar pago</button>
@@ -2406,7 +2401,6 @@ function App() {
                       <b>{fmt(cycleTotalOf(c.id) - paidIn(c.id))}</b>
                     </button>
                   ))}
-                  {generalPaid > 0 && <div style={{fontSize:10.5,opacity:.65,marginTop:4}}>Las tarjetas no incluyen {fmt(generalPaid)} de pagos generales (sin tarjeta).</div>}
                 </div>
               </div>
             )}
@@ -2450,7 +2444,7 @@ function App() {
               <div className="pay-list">
                 {paySum.list.map(pay => (
                   <div key={pay.id} className="pay-row">
-                    <span className="pay-dot" style={{background:pay.cardId==="all" ? "#1e293b" : accountColor(pay.cardId)}}></span>
+                    <span className="pay-dot" style={{background:accountColor(pay.cardId)}}></span>
                     <span className="pay-what">{pay.date.slice(5)} · {isAll ? `${cardName(pay.cardId)} · ` : ""}{pay.by || "—"}{pay.note ? ` · ${pay.note}` : ""}</span>
                     <b>− {fmt(pay.amount)}</b>
                     <button type="button" className="pay-x" aria-label="Borrar pago" onClick={() => setConfirmPay(pay)}>✕</button>
@@ -2845,11 +2839,14 @@ function App() {
           <form className="modal" onClick={e=>e.stopPropagation()} onSubmit={addPayment}>
             <div style={{fontSize:11,letterSpacing:2,color:"#0f4c81",marginBottom:14,fontWeight:700}}>REGISTRAR PAGO</div>
             <div className="field"><label>Tarjeta</label>
-              <select className="sel" value={payForm.cardId} onChange={e=>setPayForm(f=>({...f,cardId:e.target.value}))}>
-                <option value="all">Todas las tarjetas (pago general)</option>
-                {cards.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-              </select>
-              <div style={{fontSize:10.5,color:"#94a3b8",marginTop:6}}>{payForm.cardId === "all" ? "Baja solo el total de \"Todas\"; no se aplica a ninguna tarjeta en particular." : "Se aplica a esa tarjeta y también baja el total de \"Todas\"."}</div>
+              <div className="sel-wrap">
+                <select className="sel" value={payForm.cardId} onChange={e=>setPayForm(f=>({...f,cardId:e.target.value}))} required>
+                  <option value="" disabled>Elige una tarjeta</option>
+                  {cards.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                </select>
+                <span className="sel-arrow" aria-hidden="true">▾</span>
+              </div>
+              <div style={{fontSize:10.5,color:"#94a3b8",marginTop:6}}>El pago se aplica a esa tarjeta y también baja el total de "Todas".</div>
             </div>
             <div className="field"><label>Monto pagado</label>
               <input className="inp" type="number" min="0" step="0.01" inputMode="decimal" placeholder="0.00" value={payForm.amount} onChange={e=>setPayForm(f=>({...f,amount:e.target.value}))} required autoFocus />
