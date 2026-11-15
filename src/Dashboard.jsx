@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo } from "react";
 import { lineAmount } from "./budgetMath.js";
+import { sharesOf } from "./shares.js";
 
 // Dashboard: budget proportions (doughnut), spending so far this month by
-// category, best card today, the three money tiles and last month's summary.
+// category, best card today, the three money tiles (por pagar, gastos de Omar y de Shelsy) and last month's summary.
 // Everything is computed from the expenses the app already loaded (all cards +
 // débito); only the budget doughnut needs one extra call.
 
@@ -156,7 +157,7 @@ const readOpen = () => {
   catch { return { best: true, inbox: true, cur: true, last: true }; }
 };
 
-export default function Dashboard({ onGo, renderInbox, expenses, cards, recommendations, fmt, catEmoji, categories, owedFor, todayStr, fetcher, scriptUrl }) {
+export default function Dashboard({ onGo, renderInbox, expenses, cards, recommendations, fmt, catEmoji, categories, owedFor, porPagar, todayStr, fetcher, scriptUrl }) {
   const [budget, setBudget] = useState(null); // { lines } | "none"
   const [open, setOpen] = useState(readOpen);
   const toggle = id => setOpen(o => {
@@ -192,21 +193,23 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
     const rows = expenses.filter(e => String(e.date).slice(0, 7) === key);
     const byCat = {}, byAcct = {};
     let gross = 0, owed = 0;
+    const byPerson = { Omar: 0, Shelsy: 0 };
     for (const e of rows) {
       const o = owedFor(e);
       gross += e.amount; owed += o;
+      const share = sharesOf(e);
+      byPerson.Omar += share.Omar; byPerson.Shelsy += share.Shelsy;
       const c = canonCat(e.category, categories);
       byCat[c] = (byCat[c] || 0) + e.amount;
       byAcct[e.account] = (byAcct[e.account] || 0) + e.amount;
     }
-    return { count: rows.length, gross, owed, net: gross - owed, byCat, byAcct };
+    return { count: rows.length, gross, owed, net: gross - owed, byCat, byAcct, byPerson };
   };
   const cur = useMemo(() => sumMonth(thisKey), [expenses, thisKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const last = useMemo(() => sumMonth(lastKey), [expenses, lastKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const prev = useMemo(() => sumMonth(prevKey), [expenses, prevKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // The three money tiles (all cards + débito).
-  const porIngresar = expenses.filter(e => e.account !== "debit" && !e.added).reduce((s, e) => s + e.amount, 0);
+  // Lo que otros te deben (línea bajo los tres cuadros).
   const meDeben = expenses.filter(e => !e.paid).reduce((s, e) => s + owedFor(e), 0);
 
   const catSlices = obj => Object.entries(obj)
@@ -226,20 +229,28 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
 
   return (
     <div style={{ marginBottom: 20 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
-        <div className="stat blue" style={{ padding: "10px 12px" }}>
-          <div className="stat-label">POR INGRESAR</div>
-          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(porIngresar)}</div>
-        </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: meDeben > 0 ? 8 : 16 }}>
         <div className="stat amber" style={{ padding: "10px 12px" }}>
-          <div className="stat-label">ME DEBEN</div>
-          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(meDeben)}</div>
+          <div className="stat-label">POR PAGAR</div>
+          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(porPagar)}</div>
+          <div className="stat-sub">tarjetas</div>
         </div>
-        <div className="stat green" style={{ padding: "10px 12px" }}>
-          <div className="stat-label">NETO DEL MES</div>
-          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(cur.net)}</div>
+        <div className="stat blue" style={{ padding: "10px 12px" }}>
+          <div className="stat-label">GASTOS OMAR</div>
+          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(cur.byPerson.Omar)}</div>
+          <div className="stat-sub">{MONTHS[Number(thisKey.slice(5)) - 1]}</div>
+        </div>
+        <div className="stat rose" style={{ padding: "10px 12px" }}>
+          <div className="stat-label">GASTOS SHELSY</div>
+          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(cur.byPerson.Shelsy)}</div>
+          <div className="stat-sub">{MONTHS[Number(thisKey.slice(5)) - 1]}</div>
         </div>
       </div>
+      {meDeben > 0 && (
+        <button type="button" className="dash-owed" onClick={() => onGo("medeben")}>
+          <span>🤝 Te deben <b>{fmt(meDeben)}</b></span><span>Ver detalle ›</span>
+        </button>
+      )}
 
       {recommendations.length > 0 && (
         <Collapse title="💳 MEJOR TARJETA HOY" open={open.best} onToggle={() => toggle("best")} go={{ label: "Crédito", onClick: () => onGo("list", "mejor-tarjeta") }}

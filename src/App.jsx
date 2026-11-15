@@ -1739,6 +1739,14 @@ function App() {
         .stat.blue{background:#eff6ff;border:1px solid #bfdbfe;}
         .stat.amber{background:#fffbeb;border:1px solid #fde68a;}
         .stat.green{background:#f0fdf4;border:1px solid #bbf7d0;}
+        .stat.rose{background:#fdf2f8;border:1px solid #fbcfe8;}
+        .stat.rose .stat-label, .stat.rose .stat-value{color:#9d174d;}
+        .stat-sub{font-size:10px;margin-top:2px;opacity:.7;}
+        .stat.blue .stat-sub{color:#0f4c81;}
+        .stat.amber .stat-sub{color:#b45309;}
+        .stat.rose .stat-sub{color:#9d174d;}
+        .dash-owed{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;margin-bottom:16px;padding:10px 14px;border-radius:12px;border:1px solid #fde68a;background:#fffbeb;color:#92400e;font-family:inherit;font-size:12px;cursor:pointer;}
+        .dash-owed b{font-weight:700;}
         .stat-label{font-size:9px;font-weight:700;letter-spacing:.8px;opacity:.8;}
         .stat.blue .stat-label, .stat.blue .stat-value{color:#0f4c81;}
         .stat.amber .stat-label, .stat.amber .stat-value{color:#b45309;}
@@ -2375,6 +2383,7 @@ function App() {
             catEmoji={CAT_EMOJI}
             categories={CATEGORIES}
             owedFor={owedForExp}
+            porPagar={allCyclesTotal - allPaid}
             todayStr={today()}
             fetcher={fetchWithTimeout}
             scriptUrl={SCRIPT_URL}
