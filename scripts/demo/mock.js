@@ -70,7 +70,7 @@
       ["ppto-7", "no_esencial", "Comida afuera", 6000, ["Comida"], 7], ["ppto-8", "no_esencial", "Entretenimiento", 6000, ["Ocio", "Compras", "Otro"], 8],
       ["ppto-9", "no_esencial", "Suscripciones", 1200, ["Gastos fijos"], 9], ["ppto-10", "no_esencial", "Gym", 1500, [], 10],
       ["ppto-11", "ahorro", "Ahorro (HYSA)", 36000, [], 11], ["ppto-12", "ahorro", "Vacaciones", 3600, ["Viaje"], 12]
-    ].map(function (l) { return { rowNum: l[5] + 1, id: l[0], grupo: l[1], nombre: l[2], anual: l[3], categorias: l[4], nota: "", orden: l[5], createdAt: "" }; }),
+    ].map(function (l) { return { rowNum: l[5] + 1, id: l[0], grupo: l[1], nombre: l[2], anual: l[3], categorias: l[4], nota: "", orden: l[5], createdAt: "", fijo: ["ppto-1", "ppto-2", "ppto-5", "ppto-9", "ppto-10"].indexOf(l[0]) >= 0 }; }),
     config: { sueldoNetoAnual: 96000, anclaPago: anchor, titulo: "Presupuesto de ejemplo", fondoMeses: 3 },
     ingresos: [
       { id: "ing-1", nombre: "Omar", bruto: 78000, neto: 58000, orden: 1 },
@@ -119,12 +119,12 @@
     if (action === "settings-set") { settings.tarjetaPrincipal = b.tarjetaPrincipal; return { ok: true }; }
     if (action === "budget-list") return { lines: budget.lines, config: budget.config, ingresos: budget.ingresos };
     if (action === "budget-add") {
-      var line = { rowNum: 0, id: "ppto-n" + (++seq), grupo: b.grupo, nombre: b.nombre, anual: Number(b.anual) || 0, categorias: b.categorias || [], nota: b.nota || "", orden: budget.lines.length + 1, createdAt: "" };
+      var line = { rowNum: 0, id: "ppto-n" + (++seq), grupo: b.grupo, nombre: b.nombre, anual: Number(b.anual) || 0, categorias: b.categorias || [], nota: b.nota || "", orden: budget.lines.length + 1, createdAt: "", fijo: !!b.fijo };
       budget.lines.push(line); return line;
     }
     if (action === "budget-edit") {
       var l = budget.lines.filter(function (x) { return x.id === b.id; })[0];
-      if (l) ["grupo", "nombre", "anual", "categorias", "nota", "orden"].forEach(function (k) { if (b[k] !== undefined) l[k] = k === "anual" ? Number(b[k]) : b[k]; });
+      if (l) ["grupo", "nombre", "anual", "categorias", "nota", "orden", "fijo"].forEach(function (k) { if (b[k] !== undefined) l[k] = k === "anual" ? Number(b[k]) : b[k]; });
       return { ok: true };
     }
     if (action === "budget-delete") { budget.lines = budget.lines.filter(function (x) { return x.id !== b.id; }); return { ok: true }; }

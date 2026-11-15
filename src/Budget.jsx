@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, Fragment } from "react";
 import {
   KINDS, lineAmount, annualFromPeriod, budgetPeriod, shiftPeriod,
-  spentFor, budgetStatus, planTotals, categoryConflicts, moveLine,
+  spentFor, budgetStatus, planTotals, moveLine,
 } from "./budgetMath.js";
 
 // Budget section. The numbers live in the Sheet ("Presupuesto" tab) and are
@@ -16,7 +16,7 @@ const GROUPS = [
   { id: "ahorro", title: "Ahorro e inversión", bg: "#ecfdf5", fg: "#059669" },
 ];
 const STATUS_COLOR = { ok: "#16a34a", warn: "#d97706", over: "#dc2626" };
-const EMPTY_FORM = { id: null, grupo: "esencial", nombre: "", anual: 0, vals: { bisemanal: "", mensual: "", anual: "" }, categorias: [], nota: "" };
+const EMPTY_FORM = { id: null, grupo: "esencial", nombre: "", anual: 0, vals: { bisemanal: "", mensual: "", anual: "" }, categorias: [], nota: "", fijo: false };
 const f2 = n => String(Math.round(n * 100) / 100);
 // The three amounts of a line, as strings for the inputs, from its annual value.
 const valsFromAnual = anual => Object.fromEntries(KINDS.map(k => [k, f2(lineAmount(anual, k))]));
@@ -126,13 +126,12 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
   const esencialesAnual = lines.filter(l => l.grupo === "esencial").reduce((sum, l) => sum + (Number(l.anual) || 0), 0);
   const esencialesMes = lineAmount(esencialesAnual, "mensual");
   const fondoSugerido = Math.round(esencialesMes * fondoMeses * 100) / 100;
-  const measuredRows = rows.filter(r => r.measured);
+  const fijoRows = rows.filter(r => r.fijo);
+  const fijoAnual = fijoRows.reduce((sum, r) => sum + (Number(r.anual) || 0), 0);
   const searching = q.trim().length > 0;
   const found = useMemo(() => searchLines(lines, q), [lines, q]);
   const shownIds = new Set([...found.direct, ...found.related].map(l => l.id));
   const suggestions = [...found.direct.slice(0, 5).map(l => ({ l, rel: false })), ...found.related.slice(0, 3).map(l => ({ l, rel: true }))];
-  const measuredBudget = measuredRows.reduce((s, r) => s + r.budget, 0);
-  const measuredSpent = measuredRows.reduce((s, r) => s + r.spent, 0);
 
   function changeKind(k) { setKind(k); saveKind(k); }
 
@@ -216,7 +215,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
   function openAdd(grupo) { setConfirmDel(false); setForm({ ...EMPTY_FORM, grupo }); }
   function openEdit(r) {
     setConfirmDel(false);
-    setForm({ id: r.id, grupo: r.grupo, nombre: r.nombre, anual: r.anual, vals: valsFromAnual(r.anual), categorias: r.categorias, nota: r.nota || "" });
+    setForm({ id: r.id, grupo: r.grupo, nombre: r.nombre, anual: r.anual, vals: valsFromAnual(r.anual), categorias: r.categorias, nota: r.nota || "", fijo: !!r.fijo });
   }
   // Typing in any of the three boxes recomputes the other two (annual is the pivot).
   function setAmount(kind_, v) {
@@ -226,13 +225,10 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
       return { ...f, anual, vals: { ...valsFromAnual(anual), [kind_]: v } };
     });
   }
-  const conflicts = form ? categoryConflicts(lines, form.categorias, form.id) : [];
-  const usedBy = cat => lines.find(l => l.id !== form?.id && l.categorias.some(c => c.toLowerCase() === cat.toLowerCase()));
-
   async function saveLine(e) {
     e.preventDefault();
-    if (!form || saving || conflicts.length) return;
-    const payload = { grupo: form.grupo, nombre: form.nombre.trim(), anual: form.anual || 0, categorias: form.categorias, nota: form.nota.trim() };
+    if (!form || saving) return;
+    const payload = { grupo: form.grupo, nombre: form.nombre.trim(), anual: form.anual || 0, categorias: form.categorias, nota: form.nota.trim(), fijo: !!form.fijo };
     if (!payload.nombre) return;
     setSaving(true);
     try {
@@ -440,6 +436,24 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
             </div>
           )}
 
+          {!searching && (
+            <table className="bd-t">
+              <thead>
+                <tr><th className="g" colSpan={4} style={{ background: "#f1f5f9", color: "#0f172a" }}>Gastos fijos</th></tr>
+                <ColHead />
+              </thead>
+              <tbody>
+                {fijoRows.length === 0 && (
+                  <tr><td colSpan={4} style={{ color: "#94a3b8", fontSize: 12, whiteSpace: "normal" }}>Marca una línea como gasto fijo desde su editor y aparece aquí.</td></tr>
+                )}
+                {fijoRows.map(r => (
+                  <tr key={r.id} className="bd-tr" onClick={() => openEdit(r)}><td>{r.nombre}</td><Nums vals={r.amounts} fmt={fmt} dim={r.anual <= 0} /></tr>
+                ))}
+                {fijoRows.length > 0 && <tr className="tot"><td>Total</td><Nums vals={amountsOf(fijoAnual)} fmt={fmt} /></tr>}
+              </tbody>
+            </table>
+          )}
+
           {searching && (
             <div style={{ fontSize: 12, color: "#64748b", margin: "0 2px 10px" }}>
               {shownIds.size === 0 ? `Sin resultados para “${q.trim()}”` : `${found.direct.length} resultado${found.direct.length !== 1 ? "s" : ""}${found.related.length ? ` · ${found.related.length} relacionado${found.related.length !== 1 ? "s" : ""}` : ""}`}
@@ -515,29 +529,12 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
               <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 6 }}>Cambia cualquiera de los tres y los otros se ajustan solos (anual ÷ 12 = mensual, anual ÷ 26 = bisemanal).</div>
             </div>
 
-            <div className="field"><label>Medir con gastos de Bolsillo (opcional)</label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {categories.map(c => {
-                  const on = form.categorias.some(x => x.toLowerCase() === c.toLowerCase());
-                  const other = !on && usedBy(c);
-                  return (
-                    <button key={c} type="button" disabled={!!other} title={other ? `Ya se mide en "${other.nombre}"` : ""}
-                      className={`bd-pill ${on ? "on" : ""}`}
-                      onClick={() => setForm(f => ({ ...f, categorias: on ? f.categorias.filter(x => x.toLowerCase() !== c.toLowerCase()) : [...f.categorias, c] }))}>
-                      {catEmoji[c]} {c}
-                    </button>
-                  );
-                })}
-              </div>
-              {categories.some(c => usedBy(c) && !form.categorias.includes(c)) && (
-                <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 8 }}>
-                  Ya se miden en otra línea: {categories.filter(c => usedBy(c)).map(c => `${c} (${usedBy(c).nombre})`).join(", ")}
-                </div>
-              )}
-              <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 6 }}>
-                Los gastos de esas categorías (todas las tarjetas y débito, menos lo que te deben) se cuentan contra esta línea. Una categoría solo puede medirse en una línea.
-              </div>
-            </div>
+            <label className="field" style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!form.fijo} onChange={e => setForm(f => ({ ...f, fijo: e.target.checked }))} style={{ width: 20, height: 20, accentColor: "#0f4c81", flexShrink: 0 }} />
+              <span style={{ fontSize: 14, fontWeight: 600 }}>Es un gasto fijo
+                <span style={{ display: "block", fontSize: 10.5, fontWeight: 500, color: "#94a3b8", marginTop: 2 }}>Suma al cuadro "Gastos fijos" que está debajo del fondo de emergencia.</span>
+              </span>
+            </label>
 
             <div className="field"><label>Nota (opcional)</label>
               <input className="inp" value={form.nota} onChange={e => setForm(f => ({ ...f, nota: e.target.value }))} placeholder="Ej. se paga el 1 de cada mes" />

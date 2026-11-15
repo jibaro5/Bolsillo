@@ -14,7 +14,7 @@ export const config = { api: { bodyParser: true } };
 // respond to the first request). Every action name and JSON shape below is
 // kept identical to the old backend so the front-end needs no changes.
 
-const SHEET_NAMES = { credit: "Credit Card", debit: "Debito", recurring: "Recurrentes" };
+const SHEET_NAMES = { credit: "Credit Card", recurring: "Recurrentes" };
 const CATEGORIES = ["Comida","Super","Gas","Ocio","Viaje","Salud","Compras","Gastos fijos","Otro"];
 
 // Sheets' date epoch is 1899-12-30; 25569 is the day count from there to the
@@ -29,7 +29,7 @@ function serialToDateStr(serial) {
   return `${y}-${m}-${day}`;
 }
 
-// ---- shared helpers for any "expenses"-shaped tab (Credit Card / Debito) ----
+// ---- shared helpers for any "expenses"-shaped tab (Credit Card) ----
 
 async function readExpenses(sheetName) {
   const range = encodeURIComponent(`${sheetName}!A1:I`);
@@ -199,11 +199,9 @@ export default async function handler(req, res) {
     else if (action === "update") { await updateExpenseStatus(SHEET_NAMES.credit, body); result = { ok:true }; }
     else if (action === "delete") { await deleteRow(SHEET_NAMES.credit, body); result = { ok:true }; }
 
-    else if (action === "debito-read") result = { expenses: await readExpenses(SHEET_NAMES.debit) };
-    else if (action === "debito-append") result = await appendExpense(SHEET_NAMES.debit, body, me);
-    else if (action === "debito-edit") { await editExpense(SHEET_NAMES.debit, body); result = { ok:true }; }
-    else if (action === "debito-update") { await updateExpenseStatus(SHEET_NAMES.debit, body); result = { ok:true }; }
-    else if (action === "debito-delete") { await deleteRow(SHEET_NAMES.debit, body); result = { ok:true }; }
+    // La pestaña Debito se eliminó. Una versión vieja de la app que aún la pida no debe volver a crearla.
+    else if (action === "debito-read") result = { expenses: [] };
+    else if (typeof action === "string" && action.startsWith("debito-")) return res.status(410).json({ error: "debito_removido" });
 
     else if (action === "recurring-read") result = { items: await readRecurring() };
     else if (action === "recurring-append") result = await appendRecurring(body);
