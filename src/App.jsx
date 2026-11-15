@@ -1745,8 +1745,11 @@ function App() {
         .stat.blue .stat-sub{color:#0f4c81;}
         .stat.amber .stat-sub{color:#b45309;}
         .stat.rose .stat-sub{color:#9d174d;}
-        .dash-owed{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;margin-bottom:16px;padding:10px 14px;border-radius:12px;border:1px solid #fde68a;background:#fffbeb;color:#92400e;font-family:inherit;font-size:12px;cursor:pointer;}
-        .dash-owed b{font-weight:700;}
+        .dash-link{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:10px 14px;border-radius:12px;font-family:inherit;font-size:16px;cursor:pointer;text-align:left;}
+        .dash-link b{display:block;font-size:15px;font-weight:700;margin-top:2px;}
+        .dash-link-l{display:block;font-size:9px;font-weight:700;letter-spacing:.8px;opacity:.85;}
+        .dash-link.blue{border:1px solid #bfdbfe;background:#eff6ff;color:#0f4c81;}
+        .dash-link.amber{border:1px solid #fde68a;background:#fffbeb;color:#b45309;}
         .stat-label{font-size:9px;font-weight:700;letter-spacing:.8px;opacity:.8;}
         .stat.blue .stat-label, .stat.blue .stat-value{color:#0f4c81;}
         .stat.amber .stat-label, .stat.amber .stat-value{color:#b45309;}

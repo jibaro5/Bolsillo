@@ -209,7 +209,8 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
   const last = useMemo(() => sumMonth(lastKey), [expenses, lastKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const prev = useMemo(() => sumMonth(prevKey), [expenses, prevKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Lo que otros te deben (línea bajo los tres cuadros).
+  // Lo que falta por marcar como ingresado (todas las tarjetas) y lo que otros te deben: dos accesos bajo los tres cuadros.
+  const porIngresar = expenses.filter(e => !e.added).reduce((s, e) => s + e.amount, 0);
   const meDeben = expenses.filter(e => !e.paid).reduce((s, e) => s + owedFor(e), 0);
 
   const catSlices = obj => Object.entries(obj)
@@ -229,7 +230,7 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
 
   return (
     <div style={{ marginBottom: 20 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: meDeben > 0 ? 8 : 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
         <div className="stat amber" style={{ padding: "10px 12px" }}>
           <div className="stat-label">POR PAGAR</div>
           <div className="stat-value" style={{ fontSize: 15 }}>{fmt(porPagar)}</div>
@@ -246,11 +247,14 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
           <div className="stat-sub">{MONTHS[Number(thisKey.slice(5)) - 1]}</div>
         </div>
       </div>
-      {meDeben > 0 && (
-        <button type="button" className="dash-owed" onClick={() => onGo("medeben")}>
-          <span>🤝 Te deben <b>{fmt(meDeben)}</b></span><span>Ver detalle ›</span>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+        <button type="button" className="dash-link blue" onClick={() => onGo("list")}>
+          <span><span className="dash-link-l">POR INGRESAR</span><b>{fmt(porIngresar)}</b></span><span>›</span>
         </button>
-      )}
+        <button type="button" className="dash-link amber" onClick={() => onGo("medeben")}>
+          <span><span className="dash-link-l">TE DEBEN</span><b>{fmt(meDeben)}</b></span><span>›</span>
+        </button>
+      </div>
 
       {recommendations.length > 0 && (
         <Collapse title="💳 MEJOR TARJETA HOY" open={open.best} onToggle={() => toggle("best")} go={{ label: "Crédito", onClick: () => onGo("list", "mejor-tarjeta") }}
