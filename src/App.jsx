@@ -66,6 +66,28 @@ function parseOwedStr(s) {
     return results;
   } catch { return []; }
 }
+// Filas Por pagar / Pagado (último pago) / Restante. `dark` para el recuadro oscuro de "Todas".
+function PayLines({ sum, fmt, dark, total, totalLabel }) {
+  const c = dark
+    ? { label:"rgba(255,255,255,.78)", sub:"rgba(255,255,255,.6)", value:"#fff", line:"rgba(255,255,255,.18)" }
+    : { label:"#64748b", sub:"#94a3b8", value:"#0f172a", line:"#e2e8f0" };
+  const row = (label, value, sub, strong) => (
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:10,padding:"5px 0"}}>
+      <span style={{fontSize:11,letterSpacing:1,fontWeight:700,color:c.label}}>{label}{sub && <span style={{display:"block",fontSize:10,letterSpacing:0,fontWeight:500,color:c.sub,marginTop:1}}>{sub}</span>}</span>
+      <span style={{fontSize:strong?20:15,fontWeight:strong?700:600,color:c.value,fontVariantNumeric:"tabular-nums"}}>{value}</span>
+    </div>
+  );
+  const last = sum.last;
+  return (
+    <div>
+      {totalLabel && row(totalLabel, fmt(total), null, false)}
+      {row("POR PAGAR", fmt(sum.porPagar))}
+      {row("PAGADO", last ? fmt(last.amount) : "—", last ? `último pago · ${last.date.slice(5)}${last.by ? ` · ${last.by}` : ""}` : "sin pagos todavía")}
+      <div style={{borderTop:`1px solid ${c.line}`,marginTop:2,paddingTop:2}}>{row("RESTANTE", fmt(sum.restante), null, true)}</div>
+    </div>
+  );
+}
+
 function owedForExp(ex) {
   if (!ex.owed || !Array.isArray(ex.owed)) return 0;
   return ex.owed.reduce((s,p) => s + (parseFloat(p.value)||0), 0);
@@ -588,6 +610,7 @@ function App() {
   const [confirmBulkPaid, setConfirmBulkPaid] = useState(false);
   const [payments, setPayments] = useState([]);   // pagos hechos a las tarjetas: { id, cardId, date, amount, note, by }
   const [showPay, setShowPay] = useState(false);
+  const [showPayList, setShowPayList] = useState(false);
   const [payForm, setPayForm] = useState({ cardId:"", amount:"", date:today(), note:"" });
   const descRef = useRef();
   const syncQueueRef = useRef({});
@@ -1391,8 +1414,17 @@ function App() {
   const payInCycle = p => { const cy = cycles[p.cardId]; return !!cy && p.date >= cy.start && p.date <= cy.end; };
   const paidIn = id => payments.filter(p => p.cardId === id && payInCycle(p)).reduce((sum, p) => sum + p.amount, 0);
   const allPaid = cards.reduce((sum, c) => sum + paidIn(c.id), 0);
-  const payScope = payments.filter(p => payInCycle(p) && (isAll || p.cardId === activeCard)).sort((a, b) => b.date.localeCompare(a.date));
+  // Lo que se muestra de los pagos de un grupo de tarjetas: por pagar (lo que se debía justo antes del último pago),
+  // el último pago y lo que queda. Con un solo pago o ninguno, "por pagar" es el total del ciclo.
+  const paySummary = (ids, total) => {
+    const list = payments.filter(p => ids.includes(p.cardId) && payInCycle(p))
+      .sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id)));
+    const last = list[0] || null;
+    const paidAll = list.reduce((sum, p) => sum + p.amount, 0);
+    return { list, last, porPagar: total - (paidAll - (last?.amount || 0)), restante: total - paidAll };
+  };
   const cycleTotal = cycleExpenses.reduce((s,e)=>s+e.amount,0);
+  const paySum = isAll ? paySummary(cards.map(c => c.id), allCyclesTotal) : paySummary([activeCard], cycleTotal);
   const cyclePending = cycleExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0);
   const totalOwed = expenses.filter(e=>!e.paid).reduce((s,e)=>s+owedForExp(e),0);
   const netCost = cycleExpenses.reduce((s,e)=>s+(e.amount-owedForExp(e)),0);
@@ -1677,6 +1709,7 @@ function App() {
         .pay-lbl{font-size:10px;letter-spacing:1.2px;font-weight:700;color:#64748b;}
         .pay-due{font-family:'Playfair Display',serif;font-size:24px;font-weight:700;color:#0f172a;line-height:1.2;}
         .pay-sub{font-size:11px;color:#64748b;margin-top:2px;}
+        .pay-toggle{border:none;background:none;color:#0f4c81;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;padding:8px 4px;}
         .pay-list{margin-top:10px;border-top:1px solid #e2e8f0;padding-top:6px;}
         .pay-row{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:12px;color:#334155;}
         .pay-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
@@ -2339,12 +2372,7 @@ function App() {
                   <div className="card-label">TOTAL DE LOS CICLOS</div>
                   <div className="serif" style={{fontSize:28}}>{fmt(allCyclesTotal)}</div>
                 </div>
-                {allPaid > 0 && (
-                  <>
-                    <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginTop:6,opacity:.85}}><span>Pagado</span><span>− {fmt(allPaid)}</span></div>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginTop:2}}><span className="card-label">POR PAGAR</span><b className="serif" style={{fontSize:22}}>{fmt(allCyclesTotal - allPaid)}</b></div>
-                  </>
-                )}
+                <div style={{marginTop:8}}><PayLines sum={paySum} fmt={fmt} dark /></div>
                 <div style={{marginTop:10,borderTop:"1px solid rgba(255,255,255,.18)",paddingTop:8}}>
                   {cards.map(c => (
                     <button key={c.id} type="button" className="all-row" onClick={()=>setActiveCard(c.id)}>
@@ -2385,17 +2413,18 @@ function App() {
           </div>
 
           <div className="pay-strip">
-            <div className="pay-top">
-              <div>
-                <div className="pay-lbl">{isAll ? "POR PAGAR · TODAS" : "POR PAGAR"}</div>
-                <div className="pay-due">{fmt((isAll ? allCyclesTotal : cycleTotal) - (isAll ? allPaid : paidIn(activeCard)))}</div>
-                {(isAll ? allPaid : paidIn(activeCard)) > 0 && <div className="pay-sub">{fmt(isAll ? allCyclesTotal : cycleTotal)} del ciclo − {fmt(isAll ? allPaid : paidIn(activeCard))} pagado</div>}
-              </div>
+            {!isAll && <PayLines sum={paySum} fmt={fmt} total={cycleTotal} totalLabel="TOTAL DEL CICLO" />}
+            <div className="pay-top" style={!isAll ? {marginTop:10} : undefined}>
               <button type="button" className="btn btn-p" style={{padding:"10px 14px",fontSize:12}} onClick={openPay}>+ Registrar pago</button>
+              {paySum.list.length > 0 && (
+                <button type="button" className="pay-toggle" aria-expanded={showPayList} onClick={() => setShowPayList(o => !o)}>
+                  {showPayList ? "Ocultar pagos ▴" : `Ver pagos (${paySum.list.length}) ▾`}
+                </button>
+              )}
             </div>
-            {payScope.length > 0 && (
+            {showPayList && paySum.list.length > 0 && (
               <div className="pay-list">
-                {payScope.map(pay => (
+                {paySum.list.map(pay => (
                   <div key={pay.id} className="pay-row">
                     <span className="pay-dot" style={{background:accountColor(pay.cardId)}}></span>
                     <span className="pay-what">{pay.date.slice(5)} · {isAll ? `${cardName(pay.cardId)} · ` : ""}{pay.by || "—"}{pay.note ? ` · ${pay.note}` : ""}</span>
