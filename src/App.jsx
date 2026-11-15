@@ -586,6 +586,9 @@ function App() {
   const [ruleForm, setRuleForm] = useState({ cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false, periodo:"", grupo:"" });
   const [confirmDeleteRule, setConfirmDeleteRule] = useState(null);
   const [confirmBulkPaid, setConfirmBulkPaid] = useState(false);
+  const [payments, setPayments] = useState([]);   // pagos hechos a las tarjetas: { id, cardId, date, amount, note, by }
+  const [showPay, setShowPay] = useState(false);
+  const [payForm, setPayForm] = useState({ cardId:"", amount:"", date:today(), note:"" });
   const descRef = useRef();
   const syncQueueRef = useRef({});
   const lastCreditCardRef = useRef("");
@@ -671,6 +674,7 @@ function App() {
           return [];
         })
       );
+      const pagosPromise = fetchWithTimeout(`${SCRIPT_URL}?action=pagos-list`).then(r => r.ok ? r.json() : {}).then(d => d.pagos || []).catch(() => []);
       const rulesPromise = rulesList().catch(err => {
         console.warn("Reglas tab not available yet", err);
         return [];
@@ -679,10 +683,11 @@ function App() {
         console.warn("Plaid state not available", err);
         return EMPTY_PLAID;
       });
-      const [recItems, rulesRows, plaidData, ...cardRowsList] = await Promise.all([
-        recurringRead(), rulesPromise, plaidPromise, ...cardPromises,
+      const [recItems, rulesRows, plaidData, pagosRows, ...cardRowsList] = await Promise.all([
+        recurringRead(), rulesPromise, plaidPromise, pagosPromise, ...cardPromises,
       ]);
       setRules(rulesRows);
+      setPayments(pagosRows);
       setPlaid(plaidData);
       retryPendingBankConnection();
       if (plaidData.items.length) syncPlaidIfDue(15 * 1000);
@@ -703,6 +708,29 @@ function App() {
       showToast("No se pudo conectar al Sheet","warn");
     }
     setLoading(false);
+  }
+
+  function openPay() {
+    setPayForm({ cardId: (activeCard && activeCard !== "all") ? activeCard : mainCardId, amount:"", date:today(), note:"" });
+    setShowPay(true);
+  }
+  function addPayment(e) {
+    e.preventDefault();
+    const amount = parseFloat(payForm.amount);
+    if (!payForm.cardId || !(amount > 0)) return;
+    const pay = { id: `pay-${Date.now()}`, cardId: payForm.cardId, date: payForm.date, amount, note: payForm.note.trim(), by: me?.userLabel || "" };
+    setPayments(list => [pay, ...list]);
+    setShowPay(false);
+    showToast("Pago registrado");
+    fetchWithTimeout(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ action:"pagos-add", ...pay }) })
+      .then(r => { if (!r.ok) throw new Error(String(r.status)); })
+      .catch(() => { setPayments(list => list.filter(x => x.id !== pay.id)); showToast("No se pudo guardar el pago","warn"); });
+  }
+  function removePayment(pay) {
+    setPayments(list => list.filter(x => x.id !== pay.id));
+    fetchWithTimeout(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ action:"pagos-delete", id: pay.id }) })
+      .then(r => { if (!r.ok) throw new Error(String(r.status)); })
+      .catch(() => { setPayments(list => [pay, ...list]); showToast("No se pudo borrar el pago","warn"); });
   }
 
   function showToast(msg, type="ok") {
@@ -1359,6 +1387,11 @@ function App() {
   const cycleExpenses = isAll ? expenses.filter(inOwnCycle) : cardExpenses.filter(e => e.date >= cycle.start && e.date <= cycle.end);
   const cycleTotalOf = id => expenses.filter(e => e.account === id && inOwnCycle(e)).reduce((sum, e) => sum + e.amount, 0);
   const allCyclesTotal = cards.reduce((sum, c) => sum + cycleTotalOf(c.id), 0);
+  // Pagos hechos dentro del ciclo de su tarjeta; se restan de lo que se debe.
+  const payInCycle = p => { const cy = cycles[p.cardId]; return !!cy && p.date >= cy.start && p.date <= cy.end; };
+  const paidIn = id => payments.filter(p => p.cardId === id && payInCycle(p)).reduce((sum, p) => sum + p.amount, 0);
+  const allPaid = cards.reduce((sum, c) => sum + paidIn(c.id), 0);
+  const payScope = payments.filter(p => payInCycle(p) && (isAll || p.cardId === activeCard)).sort((a, b) => b.date.localeCompare(a.date));
   const cycleTotal = cycleExpenses.reduce((s,e)=>s+e.amount,0);
   const cyclePending = cycleExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0);
   const totalOwed = expenses.filter(e=>!e.paid).reduce((s,e)=>s+owedForExp(e),0);
@@ -1639,6 +1672,16 @@ function App() {
         .card-total{text-align:right;}
         .card-total .serif{font-size:24px;font-weight:700;line-height:1;}
         .due-pill{display:inline-flex;margin-top:8px;padding:3px 9px;border-radius:20px;background:rgba(255,255,255,.18);font-size:10px;font-weight:700;letter-spacing:.3px;}
+        .pay-strip{background:#fff;border-radius:16px;padding:14px 16px;margin-top:12px;box-shadow:0 1px 4px rgba(0,0,0,.06);}
+        .pay-top{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+        .pay-lbl{font-size:10px;letter-spacing:1.2px;font-weight:700;color:#64748b;}
+        .pay-due{font-family:'Playfair Display',serif;font-size:24px;font-weight:700;color:#0f172a;line-height:1.2;}
+        .pay-sub{font-size:11px;color:#64748b;margin-top:2px;}
+        .pay-list{margin-top:10px;border-top:1px solid #e2e8f0;padding-top:6px;}
+        .pay-row{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:12px;color:#334155;}
+        .pay-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+        .pay-what{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#64748b;}
+        .pay-x{border:none;background:none;color:#94a3b8;font-size:13px;cursor:pointer;padding:4px 6px;}
         .all-hero{border-radius:20px;padding:18px 20px;color:#fff;background:linear-gradient(135deg,#1e293b,#0f172a);box-shadow:0 16px 30px -14px rgba(15,23,42,.5);}
         .all-row{display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;color:#fff;font-family:inherit;font-size:13px;padding:7px 0;cursor:pointer;}
         .chipcard{flex-shrink:0;display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:8px 14px;border-radius:14px;background:#fff;color:#334155;text-align:left;}
@@ -2296,13 +2339,20 @@ function App() {
                   <div className="card-label">TOTAL DE LOS CICLOS</div>
                   <div className="serif" style={{fontSize:28}}>{fmt(allCyclesTotal)}</div>
                 </div>
+                {allPaid > 0 && (
+                  <>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginTop:6,opacity:.85}}><span>Pagado</span><span>− {fmt(allPaid)}</span></div>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginTop:2}}><span className="card-label">POR PAGAR</span><b className="serif" style={{fontSize:22}}>{fmt(allCyclesTotal - allPaid)}</b></div>
+                  </>
+                )}
                 <div style={{marginTop:10,borderTop:"1px solid rgba(255,255,255,.18)",paddingTop:8}}>
                   {cards.map(c => (
                     <button key={c.id} type="button" className="all-row" onClick={()=>setActiveCard(c.id)}>
                       <span style={{width:9,height:9,borderRadius:"50%",background:c.color||"#0f4c81",boxShadow:"0 0 0 2px rgba(255,255,255,.7)"}}></span>
                       <span style={{flex:1,textAlign:"left"}}>{c.nombre}</span>
                       <span style={{opacity:.75,fontSize:11}}>cierra {cycles[c.id]?.end?.slice(5)}</span>
-                      <b>{fmt(cycleTotalOf(c.id))}</b>
+                      {paidIn(c.id) > 0 && <span style={{opacity:.75,fontSize:11}}>{fmt(cycleTotalOf(c.id))} − {fmt(paidIn(c.id))}</span>}
+                      <b>{fmt(cycleTotalOf(c.id) - paidIn(c.id))}</b>
                     </button>
                   ))}
                 </div>
@@ -2334,9 +2384,32 @@ function App() {
             )}
           </div>
 
+          <div className="pay-strip">
+            <div className="pay-top">
+              <div>
+                <div className="pay-lbl">{isAll ? "POR PAGAR · TODAS" : "POR PAGAR"}</div>
+                <div className="pay-due">{fmt((isAll ? allCyclesTotal : cycleTotal) - (isAll ? allPaid : paidIn(activeCard)))}</div>
+                {(isAll ? allPaid : paidIn(activeCard)) > 0 && <div className="pay-sub">{fmt(isAll ? allCyclesTotal : cycleTotal)} del ciclo − {fmt(isAll ? allPaid : paidIn(activeCard))} pagado</div>}
+              </div>
+              <button type="button" className="btn btn-p" style={{padding:"10px 14px",fontSize:12}} onClick={openPay}>+ Registrar pago</button>
+            </div>
+            {payScope.length > 0 && (
+              <div className="pay-list">
+                {payScope.map(pay => (
+                  <div key={pay.id} className="pay-row">
+                    <span className="pay-dot" style={{background:accountColor(pay.cardId)}}></span>
+                    <span className="pay-what">{pay.date.slice(5)} · {isAll ? `${cardName(pay.cardId)} · ` : ""}{pay.by || "—"}{pay.note ? ` · ${pay.note}` : ""}</span>
+                    <b>− {fmt(pay.amount)}</b>
+                    <button type="button" className="pay-x" aria-label="Borrar pago" onClick={() => removePayment(pay)}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div style={{display:"flex",gap:8,overflowX:"auto",padding:"14px 2px 12px",scrollbarWidth:"none"}}>
-            {[{id:"all",nombre:"Todas",color:"#1e293b",total:allCyclesTotal},
-              ...cards.map(c => ({id:c.id,nombre:c.nombre,color:c.color||"#0f4c81",total:cycleTotalOf(c.id)}))].map(c => (
+            {[{id:"all",nombre:"Todas",color:"#1e293b",total:allCyclesTotal - allPaid},
+              ...cards.map(c => ({id:c.id,nombre:c.nombre,color:c.color||"#0f4c81",total:cycleTotalOf(c.id) - paidIn(c.id)}))].map(c => (
               <button key={c.id} className="tog chipcard" style={activeCard===c.id ? {background:c.color,color:"#fff",boxShadow:`0 6px 14px -6px ${c.color}`} : {borderLeft:`6px solid ${c.color}`}}
                 onClick={()=>setActiveCard(c.id)}>
                 <span>{c.nombre}</span><b>{fmt(c.total)}</b>
@@ -2713,6 +2786,32 @@ function App() {
       )}
 
       <button className="fab" aria-label="Agregar gasto" onClick={()=>startAdd(addTo)}>+</button>
+
+      {showPay && (
+        <div className="modal-overlay" onClick={()=>setShowPay(false)}>
+          <form className="modal" onClick={e=>e.stopPropagation()} onSubmit={addPayment}>
+            <div style={{fontSize:11,letterSpacing:2,color:"#0f4c81",marginBottom:14,fontWeight:700}}>REGISTRAR PAGO</div>
+            <div className="field"><label>Tarjeta</label>
+              <select className="sel" value={payForm.cardId} onChange={e=>setPayForm(f=>({...f,cardId:e.target.value}))}>
+                {cards.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+              </select>
+            </div>
+            <div className="field"><label>Monto pagado</label>
+              <input className="inp" type="number" min="0" step="0.01" inputMode="decimal" placeholder="0.00" value={payForm.amount} onChange={e=>setPayForm(f=>({...f,amount:e.target.value}))} required autoFocus />
+            </div>
+            <div className="field"><label>Fecha</label>
+              <input className="inp" type="date" value={payForm.date} onChange={e=>setPayForm(f=>({...f,date:e.target.value}))} required />
+            </div>
+            <div className="field"><label>Nota (opcional)</label>
+              <input className="inp" value={payForm.note} onChange={e=>setPayForm(f=>({...f,note:e.target.value}))} placeholder="Ej. pago del estado de cuenta" />
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:16}}>
+              <button className="btn btn-p" style={{flex:1}} type="submit">Guardar pago</button>
+              <button className="btn btn-g" type="button" onClick={()=>setShowPay(false)}>Cancelar</button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {toast && <div className={`toast ${toast.type==="warn"?"twarn":"tok"}`}>{toast.msg}</div>}
     </div>

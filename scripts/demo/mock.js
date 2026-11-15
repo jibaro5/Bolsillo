@@ -50,6 +50,11 @@
   };
   var sheets = { "chase-a1xa": toRows(chase), discover: toRows(discover) };
 
+  // Pagos de ejemplo hechos a las tarjetas (dentro del ciclo de cada una).
+  var pagos = [
+    { id: "pay-1", cardId: "discover", date: ago(1), amount: 200, note: "Pago parcial", by: "Omar" },
+    { id: "pay-2", cardId: "chase-a1xa", date: ago(2), amount: 100, note: "", by: "Shelsy" }
+  ];
   var recurring = [
     { id: "r1", name: "Netflix", amount: 15.49, day: "12" },
     { id: "r2", name: "Spotify", amount: 11.99, day: "3" },
@@ -113,6 +118,9 @@
   function handleSheet(action, b, q) {
     if (action === "cards-list") return { cards: cards };
     if (action === "card-read") return { expenses: sheetFor(q.cardId).slice() };
+    if (action === "pagos-list") return { pagos: pagos.slice() };
+    if (action === "pagos-add") { pagos.unshift({ id: b.id, cardId: b.cardId, date: b.date, amount: b.amount, note: b.note || "", by: b.by || "" }); return { ok: true }; }
+    if (action === "pagos-delete") { pagos = pagos.filter(function (x) { return x.id !== b.id; }); return { ok: true }; }
     if (action === "recurring-read") return { items: recurring.slice() };
     if (action === "rules-list") return { rules: rules.slice() };
     if (action === "settings-get") return { settings: settings };
