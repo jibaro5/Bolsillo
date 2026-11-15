@@ -402,15 +402,6 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
                   </div>
                   <button className="bd-arrow" aria-label="Período siguiente" onClick={() => step(1)}>›</button>
                 </div>
-                {measuredRows.length > 0 && (
-                  <>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#64748b" }}>
-                      <span>Líneas medidas</span>
-                      <b style={{ color: STATUS_COLOR[budgetStatus(measuredSpent, measuredBudget)] }}>{fmt(measuredSpent)} <span style={{ color: "#94a3b8", fontWeight: 500 }}>de {fmt(measuredBudget)}</span></b>
-                    </div>
-                    <div className="bd-bar"><div style={{ width: `${Math.min(100, measuredBudget > 0 ? (measuredSpent / measuredBudget) * 100 : 0)}%`, background: STATUS_COLOR[budgetStatus(measuredSpent, measuredBudget)] }} /></div>
-                  </>
-                )}
               </>
             ) : (
               <div style={{ marginTop: 10, fontSize: 12, color: "#64748b" }}>

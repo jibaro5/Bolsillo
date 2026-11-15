@@ -665,10 +665,6 @@ function App() {
       // the rest of the load.
       const cardsRows = await cardsList();
       setCards(cardsRows);
-      const debitPromise = debitApi.read().catch(err => {
-        console.warn("Debito tab not available yet", err);
-        return [];
-      });
       const cardPromises = cardsRows.map(c =>
         apiFor(c.id).read().catch(err => {
           console.warn(`Card ${c.id} not available yet`, err);
@@ -683,17 +679,14 @@ function App() {
         console.warn("Plaid state not available", err);
         return EMPTY_PLAID;
       });
-      const [recItems, debitRows, rulesRows, plaidData, ...cardRowsList] = await Promise.all([
-        recurringRead(), debitPromise, rulesPromise, plaidPromise, ...cardPromises,
+      const [recItems, rulesRows, plaidData, ...cardRowsList] = await Promise.all([
+        recurringRead(), rulesPromise, plaidPromise, ...cardPromises,
       ]);
       setRules(rulesRows);
       setPlaid(plaidData);
       retryPendingBankConnection();
       if (plaidData.items.length) syncPlaidIfDue(15 * 1000);
-      const normalized = [
-        ...cardsRows.flatMap((c,i) => normalizeExpenseRows(cardRowsList[i], c.id)),
-        ...normalizeExpenseRows(debitRows, "debit"),
-      ];
+      const normalized = cardsRows.flatMap((c,i) => normalizeExpenseRows(cardRowsList[i], c.id));
       setExpenses(normalized);
       setRecurring(recItems.map((r,i) => ({
         id: r.id || String(i),
@@ -1324,7 +1317,7 @@ function App() {
   // An Apple Pay row's card is trusted only when Wallet reported it; otherwise it shows (and imports) as the main card.
   const inboxGuessed = r => !!r.applepay && r.cardSource !== "wallet";
   const inboxShownCard = r => inboxGuessed(r) ? mainCardId : inboxCardOf(r);
-  const inboxRows = plaid.inbox.filter(r => inboxCardOf(r));
+  const inboxRows = plaid.inbox.filter(r => inboxCardOf(r) && inboxCardOf(r) !== "debit");
   // Finds an expense already entered by hand that this bank transaction might
   // duplicate: same amount within 3 days, or a similar name with an amount
   // within 10% (e.g. the bank amount includes a tip).
@@ -1355,7 +1348,6 @@ function App() {
   const inboxDupCount = inboxView.filter(r => r.sim).length;
   const inboxAdjustCount = inboxView.filter(r => r.status === "ajuste").length;
   const inboxPendingCount = inboxView.filter(r => r.pending && r.status === "review").length;
-  const debitExpenses = expenses.filter(e => e.account === "debit");
 
   const cycle = getCycleInfo(
     activeCardObj?.cierreDay ? parseInt(activeCardObj.cierreDay, 10) : CLOSE_DAY,
@@ -1366,7 +1358,6 @@ function App() {
   const inOwnCycle = e => { const cy = cycles[e.account]; return !!cy && e.date >= cy.start && e.date <= cy.end; };
   const cycleExpenses = isAll ? expenses.filter(inOwnCycle) : cardExpenses.filter(e => e.date >= cycle.start && e.date <= cycle.end);
   const cycleTotalOf = id => expenses.filter(e => e.account === id && inOwnCycle(e)).reduce((sum, e) => sum + e.amount, 0);
-  const debitMonthTotal = expenses.filter(e => e.account === "debit" && getMonth(e.date) === getMonth(today())).reduce((sum, e) => sum + e.amount, 0);
   const allCyclesTotal = cards.reduce((sum, c) => sum + cycleTotalOf(c.id), 0);
   const cycleTotal = cycleExpenses.reduce((s,e)=>s+e.amount,0);
   const cyclePending = cycleExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0);
@@ -1390,8 +1381,6 @@ function App() {
   }
   const filteredGroups = groupByDate(filtered);
   const filteredTotal = filtered.reduce((s,e)=>s+e.amount,0);
-  const debitGroups = groupByDate(debitExpenses);
-  const debitTotal = debitExpenses.reduce((s,e)=>s+e.amount,0);
 
   const expenseNames = [...new Set(expenses.map(e=>e.desc.trim()).filter(Boolean))];
   const qName = nameFilter.trim().toLowerCase();
@@ -1894,7 +1883,6 @@ function App() {
                       <select className="sel" style={{width:"auto",fontSize:12,padding:"7px 10px"}} value={a.cardId} onChange={e=>mapPlaidAccount(a.accountId, e.target.value)}>
                         <option value="">No importar</option>
                         {cards.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-                        <option value="debit">Debito</option>
                       </select>
                     </div>
                   ))}
@@ -2119,11 +2107,6 @@ function App() {
                     <span className="acct-dot" style={{background:c.color||"#0f4c81"}}></span>{c.nombre}
                   </button>
                 ))}
-                <button type="button" className={`acct-btn debito ${formAccount==="debit"?"on":""}`}
-                  style={formAccount==="debit" ? {borderColor:"#475569", background:"#475569", color:"#fff", boxShadow:"0 6px 14px -6px #475569"} : {borderLeft:"6px solid #475569"}}
-                  onClick={()=>setFormAccount("debit")}>
-                  <span className="acct-dot" style={{background:formAccount==="debit"?"#fff":"#475569"}}></span>Debito
-                </button>
               </div>
             )}
 
@@ -2322,34 +2305,10 @@ function App() {
                       <b>{fmt(cycleTotalOf(c.id))}</b>
                     </button>
                   ))}
-                  <button type="button" className="all-row" onClick={()=>setActiveCard("debit")}>
-                    <span style={{width:9,height:9,borderRadius:"50%",background:"#475569",boxShadow:"0 0 0 2px rgba(255,255,255,.7)"}}></span>
-                    <span style={{flex:1,textAlign:"left"}}>Débito</span>
-                    <span style={{opacity:.75,fontSize:11}}>este mes</span>
-                    <b>{fmt(debitMonthTotal)}</b>
-                  </button>
                 </div>
               </div>
             )}
-            {activeCard==="debit" && (
-              <div className="stack-card front" style={{background:"linear-gradient(135deg,#1e293b,#0f172a)",transform:"none",cursor:"default"}}>
-                <div className="card-row1">
-                  <div><div className="card-brand">DEBITO · EFECTIVO</div><div className="card-chip"></div></div>
-                  <div className="card-dots">•••</div>
-                </div>
-                <div className="card-row2">
-                  <div>
-                    <div className="card-label">SIN CICLO</div>
-                    <div className="card-value">Se paga al momento</div>
-                  </div>
-                  <div className="card-total">
-                    <div className="card-label">TOTAL DEBITO</div>
-                    <div className="serif">{fmt(debitTotal)}</div>
-                  </div>
-                </div>
-              </div>
-            )}
-            {!isAll && activeCard!=="debit" && (
+            {!isAll && (
               <div className="stack-card front"
                 style={{transform:"none",cursor:"default",background: activeCardObj?.color
                   ? `linear-gradient(135deg,${cycle.isUrgent?"#dc2626,#b91c1c":`${activeCardObj.color},${activeCardObj.color}`})`
@@ -2377,8 +2336,7 @@ function App() {
 
           <div style={{display:"flex",gap:8,overflowX:"auto",padding:"14px 2px 12px",scrollbarWidth:"none"}}>
             {[{id:"all",nombre:"Todas",color:"#1e293b",total:allCyclesTotal},
-              ...cards.map(c => ({id:c.id,nombre:c.nombre,color:c.color||"#0f4c81",total:cycleTotalOf(c.id)})),
-              {id:"debit",nombre:"Débito",color:"#475569",total:debitMonthTotal}].map(c => (
+              ...cards.map(c => ({id:c.id,nombre:c.nombre,color:c.color||"#0f4c81",total:cycleTotalOf(c.id)}))].map(c => (
               <button key={c.id} className="tog chipcard" style={activeCard===c.id ? {background:c.color,color:"#fff",boxShadow:`0 6px 14px -6px ${c.color}`} : {borderLeft:`6px solid ${c.color}`}}
                 onClick={()=>setActiveCard(c.id)}>
                 <span>{c.nombre}</span><b>{fmt(c.total)}</b>
@@ -2398,7 +2356,7 @@ function App() {
 
           <BestCardWidget recommendations={recommendations} cards={cards} fmt={fmt} catEmoji={CAT_EMOJI} />
 
-          {activeCard!=="debit" && (
+          {(
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,margin:"16px 0"}}>
               <div className="stat blue" style={{padding:"10px 12px"}}>
                 <div className="stat-label">POR INGRESAR</div>
@@ -2415,7 +2373,7 @@ function App() {
             </div>
           )}
 
-          {activeCard!=="debit" ? (
+          {(
             <>
               <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
                 <div style={{display:"flex",background:"#e2e8f0",borderRadius:20,padding:"3px",gap:2}}>
@@ -2497,21 +2455,6 @@ function App() {
                   </button>
                 )}
               </>}
-            </>
-          ) : (
-            loading ? (
-              <div className="empty-state">Cargando...</div>
-            ) : <>
-              {debitExpenses.length===0 && <div className="empty-state">Sin gastos de debito aun.</div>}
-              {debitGroups.map(group => (
-                <div key={group.date}>
-                  <div className="day-head"><span>{dayHeaderLabel(group.date)}</span><span>{fmt(group.total)}</span></div>
-                  {group.items.map(ex => ExpenseRow(ex, {showAdded:false}))}
-                </div>
-              ))}
-              <div style={{marginTop:14,padding:"10px 12px",borderRadius:12,background:"#f1f5f9",fontSize:11,color:"#64748b",lineHeight:1.5,border:"1px dashed #e2e8f0"}}>
-                Debito no cuenta para el ciclo de Discover ni para Resumen — pero si suma en "Me deben".
-              </div>
             </>
           )}
         </>}
@@ -3055,7 +2998,6 @@ function QuickAdd({ onDone }) {
             {cards.map(c => (
               <button key={c.id} type="button" className={`lg-btn ${account===c.id?"lg-btn-p":"lg-btn-g"}`} style={{marginBottom:4}} onClick={()=>setAccount(c.id)}>💳 {c.nombre}</button>
             ))}
-            <button type="button" className={`lg-btn ${account==="debit"?"lg-btn-p":"lg-btn-g"}`} onClick={()=>setAccount("debit")}>🏦 Debito</button>
             <input className="lg-input" placeholder="Descripción" value={desc} onChange={e=>setDesc(e.target.value)} required />
             <input className="lg-input" type="number" step="0.01" inputMode="decimal" placeholder="Monto" value={amount} onChange={e=>setAmount(e.target.value)} required />
             <input className="lg-input" type="date" value={date} onChange={e=>setDate(e.target.value)} required />
