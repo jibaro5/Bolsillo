@@ -59,6 +59,14 @@ export default async function handler(req, res) {
     const isSelf = same(target.userLabel, admin.userLabel);
     const isLastAdmin = target.rol === "admin" && target.estado === "activo" && (await adminCount()) <= 1;
 
+    if (action === "password-reset") {
+      // Un código de un solo uso para que esa persona ponga una contraseña nueva (o registre su Face ID otra vez).
+      // Lo que ya tiene sigue funcionando hasta que lo use. Los códigos anteriores de esa persona se cancelan.
+      if (target.estado !== "activo") return res.status(400).json({ error: "blocked" });
+      for (const i of await listInvites()) if (same(i.userLabel, target.userLabel)) await revokeInvite(i.id);
+      return res.status(200).json(await createInvite({ userLabel: target.userLabel, rol: target.rol, creadoPor: admin.userLabel }));
+    }
+
     if (action === "user-block") {
       if (isSelf) return res.status(400).json({ error: "cannot_block_self" });
       if (isLastAdmin) return res.status(400).json({ error: "last_admin" });

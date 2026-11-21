@@ -47,6 +47,7 @@ export default function Accounts({ fetcher, showToast, me }) {
     cannot_delete_self: "No puedes eliminar tu propia cuenta.",
     last_admin: "Debe quedar al menos un administrador activo.",
     nombre_invalido: "Escribe un nombre (máx. 40 caracteres).",
+    blocked: "Esa cuenta está bloqueada: desbloquéala primero.",
   };
   async function act(action, payload, okMsg) {
     if (busy) return null;
@@ -66,6 +67,10 @@ export default function Accounts({ fetcher, showToast, me }) {
     e.preventDefault();
     const out = await act("invite-create", { userLabel: inviteName.trim() });
     if (out) { setShowInvite(false); setInviteName(""); setShown({ kind: "invite", ...out }); }
+  }
+  async function resetPassword(userLabel) {
+    const out = await act("password-reset", { userLabel });
+    if (out) setShown({ kind: "invite", reset: true, ...out });
   }
   async function createKey(userLabel) {
     const out = await act("apple-key-create", { userLabel });
@@ -127,14 +132,15 @@ export default function Accounts({ fetcher, showToast, me }) {
             <div className="ac-meta">Apple Pay: {u.appleKey ? `clave personal ••••${u.appleKey.hint}` : hasOriginal ? `clave del atajo ••••${data.legacyKey.hint} ✓` : "sin clave"}</div>
             {hasOriginal && <div className="ac-meta" style={{ color: "#94a3b8" }}>Es la que ya tienes en tu atajo; no hace falta crear otra.</div>}
 
-            {(!hasOriginal || u.appleKey || !self) && <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+              <button className="btn btn-g btn-sm" disabled={busy || blocked} onClick={() => resetPassword(u.userLabel)}>Restablecer contraseña</button>
               {!hasOriginal && <button className="btn btn-g btn-sm" disabled={busy || blocked} onClick={() => createKey(u.userLabel)}>{u.appleKey ? "Nueva clave Apple Pay" : "Crear clave Apple Pay"}</button>}
               {u.appleKey && <button className="btn btn-g btn-sm" disabled={busy} onClick={() => setConfirm({ action: "apple-key-revoke", userLabel: u.userLabel, done: "Clave revocada", text: `La clave de Apple Pay de ${u.userLabel} dejará de funcionar de inmediato.`, button: "Revocar clave" })}>Revocar clave</button>}
               {!self && (blocked
                 ? <button className="btn btn-g btn-sm" disabled={busy} onClick={() => act("user-unblock", { userLabel: u.userLabel }, "Desbloqueado")}>Desbloquear</button>
                 : <button className="btn btn-amber btn-sm" disabled={busy} onClick={() => setConfirm({ action: "user-block", userLabel: u.userLabel, done: "Bloqueado", text: `${u.userLabel} perderá el acceso en menos de un minuto, aunque tenga la sesión abierta. Podrás desbloquearla después.`, button: "Bloquear" })}>Bloquear</button>)}
               {!self && <button className="btn btn-d btn-sm" disabled={busy} onClick={() => setConfirm({ action: "user-delete", userLabel: u.userLabel, done: "Cuenta eliminada", text: `Se borran el Face ID, la contraseña y la clave de Apple Pay de ${u.userLabel}. Sus gastos ya registrados se quedan. Para que vuelva a entrar necesitará una invitación nueva.`, button: "Eliminar cuenta" })}>Eliminar</button>}
-            </div>}
+            </div>
           </div>
         );
       })}
@@ -170,14 +176,15 @@ export default function Accounts({ fetcher, showToast, me }) {
       {shown?.kind === "invite" && (
         <div className="modal-overlay">
           <div className="modal" style={{ maxWidth: 400 }}>
-            <div style={{ fontSize: 11, letterSpacing: 2, color: "#0f4c81", fontWeight: 700 }}>INVITACIÓN PARA {shown.userLabel.toUpperCase()}</div>
+            <div style={{ fontSize: 11, letterSpacing: 2, color: "#0f4c81", fontWeight: 700 }}>{shown.reset ? "RESTABLECER ACCESO DE" : "INVITACIÓN PARA"} {shown.userLabel.toUpperCase()}</div>
             <div className="ac-code">{shown.code}</div>
             <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>
               Un solo uso. Vence en {left(shown.expira)}. Solo se muestra ahora: si la pierdes, crea otra.
-              <br /><br />Cómo la usa: abre {origin.replace(/^https?:\/\//, "")}, toca <b>Configurar este dispositivo</b> y escribe su nombre y este código.
+              <br /><br />Cómo la usa: abre {origin.replace(/^https?:\/\//, "")}, toca la pestaña <b>Crear cuenta</b>, escribe su nombre y este código, y elige una contraseña nueva (o registra su Face ID).
+              {shown.reset && <><br /><br />Su contraseña de ahora sigue funcionando hasta que use el código.</>}
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-              <button className="btn btn-p" style={{ flex: 1 }} onClick={() => share(`Tu invitación a Bolsillo: ${shown.code}\n1. Abre ${origin}\n2. Toca "Configurar este dispositivo"\n3. Escribe tu nombre (${shown.userLabel}) y este código.\nVence en ${left(shown.expira)}, un solo uso.`)}>Compartir</button>
+              <button className="btn btn-p" style={{ flex: 1 }} onClick={() => share(`${shown.reset ? "Código para restablecer tu acceso a Bolsillo" : "Tu invitación a Bolsillo"}: ${shown.code}\n1. Abre ${origin}\n2. Toca la pestaña "Crear cuenta"\n3. Escribe tu nombre (${shown.userLabel}) y este código\n4. Elige una contraseña nueva (o registra tu Face ID)\nVence en ${left(shown.expira)}, un solo uso.`)}>Compartir</button>
               <button className="btn btn-g" onClick={() => copy(shown.code)}>Copiar código</button>
             </div>
             <button className="btn btn-g" style={{ width: "100%", marginTop: 8 }} onClick={() => setShown(null)}>Listo</button>

@@ -203,7 +203,11 @@
     try {
       if (u.pathname === "/api/sheet") result = handleSheet(action, body, q);
       else if (u.pathname === "/api/plaid") result = handlePlaid(action, body);
-      else if (u.pathname === "/api/admin") result = (!action || action === "overview") ? JSON.parse(JSON.stringify(admin)) : { ok: true };
+      else if (u.pathname === "/api/admin") {
+        if (!action || action === "overview") result = JSON.parse(JSON.stringify(admin));
+        else if (action === "password-reset" || action === "invite-create") result = { code: "K7QM-2XVD-9RTA", userLabel: body.userLabel, expira: new Date(Date.now() + 48 * 3600 * 1000).toISOString() };
+        else result = { ok: true };
+      }
       else if (u.pathname === "/api/auth") {
         if (action === "me") result = { userLabel: "Omar", rol: "admin" };
         else if (action === "password-login" || action === "password-set") result = { token: "demo", userLabel: body.userLabel || "Omar" };
