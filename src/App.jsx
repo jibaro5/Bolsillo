@@ -4,6 +4,7 @@ import Dashboard, { BestCardWidget, GoLink } from "./Dashboard.jsx";
 import Split from "./Split.jsx";
 import Accounts from "./Accounts.jsx";
 import { isHidden, setHidden, MASK } from "./privacy.js";
+import { DEBTORS, personOf, debtOf, debtTotalOf, pendingFor, totalFor } from "./shares.js";
 
 const SCRIPT_URL = "/api/sheet";
 // Expenses saved before "who registered it" existed have no name; they were all entered by the owner.
@@ -124,35 +125,16 @@ function groupByDate(list) {
     .sort((a,b)=>b[0].localeCompare(a[0]))
     .map(([date,items])=>({ date, items, total: items.reduce((s,e)=>s+e.amount,0) }));
 }
-function buildShareText(items) {
-  const groups = groupByDate(items);
-  const lines = ["*Pa' cuadrar*", ""];
-  groups.forEach(g => {
-    lines.push(`*${dayHeaderLabel(g.date,{relative:false})}*`);
+// Mensaje con lo que debe cada quien a la cuenta en conjunto. `sections` = [{ who, items }].
+function buildShareText(sections) {
+  const lines = ["*Lo que debemos a la cuenta*", ""];
+  sections.filter(sec => sec.items.length).forEach(sec => {
+    lines.push(`*${sec.who} debe ${fmtReal(totalFor(sec.items, sec.who))}*`, "");
+    groupByDate(sec.items).forEach(g => {
+      g.items.forEach(ex => lines.push(`${dayHeaderLabel(g.date,{relative:false})} · ${ex.desc} - ${fmtReal(ex.amount)} · ${sec.who} debe ${fmtReal(debtOf(ex, sec.who))}`));
+    });
     lines.push("");
-    g.items.forEach(ex => {
-      const owedAmt = owedForExp(ex);
-      const mine = ex.amount - owedAmt;
-      lines.push(`${ex.desc} - ${fmtReal(ex.amount)}`);
-      (ex.owed||[]).forEach(p => {
-        lines.push(`  ${p.name||"Alguien"} debe: ${fmtReal(parseFloat(p.value)||0)}`);
-      });
-      lines.push(`  Omar: ${fmtReal(mine)}`);
-      lines.push("");
-    });
   });
-  const personTotals = {};
-  items.forEach(ex => {
-    (ex.owed||[]).forEach(p => {
-      const name = p.name || "Alguien";
-      personTotals[name] = (personTotals[name]||0) + (parseFloat(p.value)||0);
-    });
-  });
-  const totalsLine = Object.entries(personTotals).map(([name,amt])=>`${name}: ${fmtReal(amt)}`).join(", ");
-  lines.push("*Total*");
-  lines.push(totalsLine);
-  lines.push("");
-  lines.push("¿Te debo algo?");
   return lines.join("\n").trim();
 }
 function getCycleInfo(closeDay = CLOSE_DAY, dueDay = DUE_DAY) {
@@ -607,7 +589,7 @@ function App() {
   const [editingRuleId, setEditingRuleId] = useState(null);
   const [ruleForm, setRuleForm] = useState({ cardId:"", categoria:"", tasa:"", fechaInicio:"", fechaFin:"", tope:"", requiereActivacion:false, periodo:"", grupo:"" });
   const [confirmDeleteRule, setConfirmDeleteRule] = useState(null);
-  const [confirmBulkPaid, setConfirmBulkPaid] = useState(false);
+  const [confirmBulkPaid, setConfirmBulkPaid] = useState(null);   // { who, items } a la espera de confirmar
   const [payments, setPayments] = useState([]);   // pagos hechos a las tarjetas: { id, cardId, date, amount, note, by }
   const [showPay, setShowPay] = useState(false);
   const [showPayList, setShowPayList] = useState(false);
@@ -771,10 +753,10 @@ function App() {
   function updatePerson(i,k,v) { setForm(f=>({...f,owed:f.owed.map((p,j)=>j===i?{...p,[k]:v}:p)})); }
   function lastSplitForPerson(name) {
     const matches = expenses
-      .filter(e => e.amount > 0 && (e.owed||[]).some(p=>p.name===name))
+      .filter(e => e.amount > 0 && (e.owed||[]).some(p=>personOf(p.name)===name))
       .sort((a,b) => b.date.localeCompare(a.date));
     if (!matches.length) return null;
-    const p = matches[0].owed.find(p=>p.name===name);
+    const p = matches[0].owed.find(p=>personOf(p.name)===name);
     const pct = (parseFloat(p.value) / matches[0].amount) * 100;
     return isFinite(pct) && pct > 0 ? Math.round(pct * 10) / 10 : null;
   }
@@ -956,10 +938,10 @@ function App() {
   }
 
   function markAllPaid() {
-    setConfirmBulkPaid(false);
-    const unpaid = expenses.filter(e => owedForExp(e) > 0 && !e.paid);
+    const unpaid = confirmBulkPaid?.items || [];
+    setConfirmBulkPaid(null);
     if (!unpaid.length) return;
-    bulkToggle(unpaid, "paid", `${unpaid.length} gastos marcados como pagados`);
+    bulkToggle(unpaid, "paid", `${unpaid.length} gastos marcados como repuestos`);
   }
 
   function markAllAdded() {
@@ -1345,9 +1327,9 @@ function App() {
     });
   }
 
-  function shareSelected(items) {
-    if (!items.length) return;
-    const text = buildShareText(items);
+  function shareSelected(sections) {
+    if (!sections.some(sec => sec.items.length)) return;
+    const text = buildShareText(sections);
     if (navigator.share) navigator.share({ text }).catch(()=>{});
     else setShareText(text);
   }
@@ -1427,13 +1409,14 @@ function App() {
   const cycleTotal = cycleExpenses.reduce((s,e)=>s+e.amount,0);
   const paySum = isAll ? paySummary(cards.map(c => c.id), allCyclesTotal) : paySummary([activeCard], cycleTotal);
   const cyclePending = cycleExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0);
-  const totalOwed = expenses.filter(e=>!e.paid).reduce((s,e)=>s+owedForExp(e),0);
+  const totalOwed = expenses.filter(e=>!e.paid).reduce((s,e)=>s+debtTotalOf(e),0);
   const netCost = cycleExpenses.reduce((s,e)=>s+(e.amount-owedForExp(e)),0);
   const months = [...new Set(cardExpenses.map(e=>getMonth(e.date)))].sort().reverse();
   const availableMonths = [...new Set(cardExpenses.map(e=>getMonth(e.date)))].sort().reverse();
-  const meDeben = expenses.filter(e => owedForExp(e) > 0 && !e.paid);
-  const meDebenTotal = meDeben.reduce((s,e)=>s+owedForExp(e),0);
-  const meDebenGroups = groupByDate(meDeben);
+  // "Debemos": lo que Omar y Shelsy le deben a la cuenta en conjunto y aún no han repuesto. Lo de terceros no se muestra.
+  const debemos = DEBTORS.map(who => { const items = pendingFor(expenses, who); return { who, items, total: totalFor(items, who), groups: groupByDate(items) }; });
+  const debemosTotal = debemos.reduce((s, d) => s + d.total, 0);
+  const debemosCount = new Set(debemos.flatMap(d => d.items.map(e => e.id))).size;
 
   let filtered = cardExpenses;
   if (filter === "pending") filtered = filtered.filter(e=>!e.added);
@@ -1461,14 +1444,13 @@ function App() {
     const key = e.desc.trim().toLowerCase();
     if (key && e.category) categoryByName[key] = e.category;
   });
-  const selectedTotal = meDeben.filter(e=>selectedIds.has(e.id)).reduce((s,e)=>s+owedForExp(e),0);
   const hasActiveFilters = !!(nameFilter || dateFrom || dateTo);
 
   // Ultimos 6 meses con datos, para la grafica de Resumen.
   const chartMonths = [...months].slice(0,6).reverse();
   const chartData = chartMonths.map(m => {
     const exps = cardExpenses.filter(e=>getMonth(e.date)===m);
-    return { month:m, total: exps.reduce((s,e)=>s+e.amount,0), owed: exps.reduce((s,e)=>s+owedForExp(e),0) };
+    return { month:m, total: exps.reduce((s,e)=>s+e.amount,0), owed: exps.reduce((s,e)=>s+debtTotalOf(e),0) };
   });
   const chartMax = Math.max(1, ...chartData.map(d=>Math.max(d.total,d.owed))) * 1.15;
 
@@ -1476,8 +1458,8 @@ function App() {
 
   // Fila compartida para gastos de Discover/Debito y para el detalle de "Me deben".
   function ExpenseRow(ex, opts={}) {
-    const { showAdded=true, selectable=false, showSource=false } = opts;
-    const owedAmt = owedForExp(ex);
+    const { showAdded=true, selectable=false, showSource=false, person=null } = opts;
+    const owedAmt = person ? debtOf(ex, person) : debtTotalOf(ex);
     const hasOwed = owedAmt > 0;
     const fullyDone = showAdded ? (ex.added && (!hasOwed || ex.paid)) : (hasOwed && ex.paid);
     const inCycle = inOwnCycle(ex);
@@ -1513,15 +1495,14 @@ function App() {
             <span className="who-badge">{ex.by || LEGACY_OWNER}</span>
             {showSource && <span className="src-badge">{cardName(ex.account)}</span>}
             {inCycle && !showSource && <span className="badge badge-blue" style={{fontSize:9}}>ciclo actual</span>}
-            {hasOwed && !ex.paid && <span className="badge badge-amber">{(ex.owed||[]).map(p=>p.name||"Alguien").join(", ")} debe {fmt(owedAmt)}</span>}
-            {hasOwed && ex.paid && <span className="badge badge-green">Cobrado {fmt(owedAmt)}</span>}
+            {hasOwed && !ex.paid && <span className="badge badge-amber">{person ? person : DEBTORS.filter(w => debtOf(ex, w) > 0).join(" y ")} debe {fmt(owedAmt)}</span>}
+            {hasOwed && ex.paid && <span className="badge badge-green">Repuesto {fmt(owedAmt)}</span>}
           </div>
           {ex.note && <div className="tx-note">{ex.note}</div>}
         </div>
         <div className="tx-amt">
           <div className="n">{fmt(ex.amount)}</div>
-          {hasOwed && !ex.paid && <div className="owe">cobras {fmt(owedAmt)}</div>}
-          {hasOwed && <div style={{fontSize:11,color:"#059669",fontWeight:500,marginTop:2}}>neto {fmt(ex.amount-owedAmt)}</div>}
+          {hasOwed && !ex.paid && <div className="owe">se debe {fmt(owedAmt)}</div>}
           {showAdded && !showSource && (
             <div style={{marginTop:4}}>
               <span className={`badge ${ex.added?"badge-blue":"badge-gray"}`}>{ex.added?"ingresado":"pendiente"}</span>
@@ -1539,7 +1520,7 @@ function App() {
   const NAV = [
     { id:"dashboard", icon:"🏠", label:"Dashboard" },
     { id:"list", icon:"💳", label:"Crédito" },
-    { id:"medeben", icon:"🤝", label:"Me deben", badge: meDeben.length },
+    { id:"medeben", icon:"🤝", label:"Debemos", badge: debemosCount },
     { id:"recurring", icon:"📅", label:"Fijos" },
     { id:"budget", icon:"💰", label:"Presupuesto" },
     { id:"split", icon:"🧾", label:"Dividir cuenta" },
@@ -1740,6 +1721,8 @@ function App() {
         .stat.amber{background:#fffbeb;border:1px solid #fde68a;}
         .stat.green{background:#f0fdf4;border:1px solid #bbf7d0;}
         .stat.rose{background:#fdf2f8;border:1px solid #fbcfe8;}
+        .stat.slate{background:#f1f5f9;border:1px solid #cbd5e1;}
+        .stat.slate .stat-label, .stat.slate .stat-value{color:#334155;}
         .stat.rose .stat-label, .stat.rose .stat-value{color:#9d174d;}
         .stat-sub{font-size:10px;margin-top:2px;opacity:.7;}
         .stat.blue .stat-sub{color:#0f4c81;}
@@ -2160,14 +2143,14 @@ function App() {
       )}
 
       {confirmBulkPaid && (
-        <div className="modal-overlay" onClick={()=>setConfirmBulkPaid(false)}>
+        <div className="modal-overlay" onClick={()=>setConfirmBulkPaid(null)}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
-            <div style={{fontSize:11,letterSpacing:2,color:"#b45309",marginBottom:12,fontWeight:700}}>MARCAR TODOS COMO PAGADOS</div>
-            <div style={{fontSize:15,marginBottom:8,fontWeight:600}}>{meDeben.length} gastos · {fmt(meDebenTotal)}</div>
-            <div style={{fontSize:13,color:"#64748b",marginBottom:24}}>Marca todos los pendientes de cobro como pagados.</div>
+            <div style={{fontSize:11,letterSpacing:2,color:"#b45309",marginBottom:12,fontWeight:700}}>MARCAR TODO COMO REPUESTO</div>
+            <div style={{fontSize:15,marginBottom:8,fontWeight:600}}>{confirmBulkPaid.who} · {confirmBulkPaid.items.length} gastos · {fmt(totalFor(confirmBulkPaid.items, confirmBulkPaid.who))}</div>
+            <div style={{fontSize:13,color:"#64748b",marginBottom:24}}>Marca como repuestos todos los gastos que {confirmBulkPaid.who} le debía a la cuenta. Dejan de contar en "{confirmBulkPaid.who} debe".</div>
             <div style={{display:"flex",gap:8}}>
-              <button className="btn btn-amber" style={{flex:1}} onClick={markAllPaid}>Si, todos pagados</button>
-              <button className="btn btn-g" onClick={()=>setConfirmBulkPaid(false)}>Cancelar</button>
+              <button className="btn btn-amber" style={{flex:1}} onClick={markAllPaid}>Si, todo repuesto</button>
+              <button className="btn btn-g" onClick={()=>setConfirmBulkPaid(null)}>Cancelar</button>
             </div>
           </div>
         </div>
@@ -2279,22 +2262,16 @@ function App() {
                   <span style={{width:20,height:20,borderRadius:5,border:"1.5px solid #b45309",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>
                     {showOwed?"-":"+"}
                   </span>
-                  Alguien me debe de este gasto
+                  Alguien debe a la cuenta de este gasto
                 </button>
                 {showOwed && (
                   <div style={{background:"#fffbeb",border:"1.5px solid #fde68a",borderRadius:12,padding:"14px 16px",marginTop:10}}>
-                    {knownPeople.length > 0 && (
-                      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
-                        {knownPeople.map(name=>(
-                          <span key={name} style={{display:"inline-flex",alignItems:"center",gap:2,background:"#fff",border:"1.5px solid #e2e8f0",borderRadius:20,paddingLeft:10}}>
-                            <button type="button" onClick={()=>pickKnownPerson(name)}
-                              style={{background:"none",border:"none",cursor:"pointer",fontSize:11,fontWeight:600,color:"#374151",padding:"5px 0"}}>{name}</button>
-                            <button type="button" onClick={()=>dismissKnownPerson(name)} title="Quitar sugerencia"
-                              style={{background:"#f1f5f9",border:"none",borderRadius:"50%",width:18,height:18,margin:"0 5px",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:11,color:"#94a3b8",padding:0,flexShrink:0}}>×</button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
+                    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+                      {DEBTORS.map(name=>(
+                        <button key={name} type="button" onClick={()=>pickKnownPerson(name)}
+                          style={{background:"#fff",border:"1.5px solid #e2e8f0",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:600,color:"#374151",padding:"6px 14px"}}>{name}</button>
+                      ))}
+                    </div>
                     {form.owed.length===0 && (
                       <button type="button" className="btn btn-g btn-sm" onClick={addPerson} style={{fontSize:11,width:"100%"}}>+ agregar persona</button>
                     )}
@@ -2386,7 +2363,6 @@ function App() {
             catEmoji={CAT_EMOJI}
             categories={CATEGORIES}
             owedFor={owedForExp}
-            porPagar={allCyclesTotal - allPaid}
             todayStr={today()}
             fetcher={fetchWithTimeout}
             scriptUrl={SCRIPT_URL}
@@ -2479,8 +2455,8 @@ function App() {
 
           <div className="quick">
             <button className="qbtn" onClick={()=>startAdd(addTo)}><span className="qicon">➕</span><span>Agregar</span></button>
-            <button className="qbtn" onClick={()=>setTab("medeben")}><span className="qicon">🤝</span><span>Me deben</span></button>
-            <button className="qbtn" onClick={()=>shareSelected(meDeben)}><span className="qicon">📤</span><span>Compartir</span></button>
+            <button className="qbtn" onClick={()=>setTab("medeben")}><span className="qicon">🤝</span><span>Debemos</span></button>
+            <button className="qbtn" onClick={()=>shareSelected(debemos)}><span className="qicon">📤</span><span>Compartir</span></button>
             <button className="qbtn" onClick={loadAll}><span className="qicon">🔄</span><span>Sync</span></button>
           </div>
 
@@ -2495,7 +2471,7 @@ function App() {
                 <div className="stat-value" style={{fontSize:15}}>{fmt(cyclePending)}</div>
               </div>
               <div className="stat amber" style={{padding:"10px 12px"}}>
-                <div className="stat-label">ME DEBEN</div>
+                <div className="stat-label">DEBEMOS</div>
                 <div className="stat-value" style={{fontSize:15}}>{fmt(totalOwed)}</div>
               </div>
               <div className="stat green" style={{padding:"10px 12px"}}>
@@ -2595,49 +2571,47 @@ function App() {
           <div>
             <div className="medeben-banner">
               <div>
-                <div className="mb-label">TOTAL POR COBRAR</div>
-                <div className="serif mb-total">{fmt(meDebenTotal)}</div>
-                <div className="mb-sub">{meDeben.length} gastos</div>
+                <div className="mb-label">DEBEMOS A LA CUENTA EN CONJUNTO</div>
+                <div className="serif mb-total">{fmt(debemosTotal)}</div>
+                <div className="mb-sub">{debemos.map(d => `${d.who} ${fmt(d.total)}`).join(" · ")}</div>
               </div>
-              {meDeben.length>0 && (
+              {debemosCount>0 && (
                 <button className="btn" style={{background:"rgba(255,255,255,.2)",color:"#fff",border:"1.5px solid rgba(255,255,255,.4)",fontSize:12,padding:"10px 16px"}}
-                  onClick={()=>setConfirmBulkPaid(true)}>
-                  Marcar todos pagados
+                  onClick={()=>shareSelected(debemos)}>
+                  Compartir
                 </button>
               )}
             </div>
 
-            {meDeben.length>0 && (
-              <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginBottom:8}}>
-                {!selectMode && (
-                  <button className="btn btn-g btn-sm" onClick={()=>shareSelected(meDeben)}>Compartir todos</button>
-                )}
-                <button className="btn btn-g btn-sm" onClick={()=>{setSelectMode(s=>!s);setSelectedIds(new Set());}}>
-                  {selectMode?"Cancelar seleccion":"Seleccionar para compartir"}
-                </button>
-              </div>
-            )}
+            {debemosCount===0 && <div className="empty-state">Nadie debe nada a la cuenta.</div>}
 
-            {selectMode && selectedIds.size>0 && (
-              <div style={{background:"#0f172a",color:"#fff",borderRadius:12,padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,boxShadow:"0 8px 24px rgba(0,0,0,.15)"}}>
-                <div style={{fontSize:12}}>{selectedIds.size} seleccionados · {fmt(selectedTotal)}</div>
-                <button className="btn btn-p btn-sm" onClick={()=>shareSelected(meDeben.filter(e=>selectedIds.has(e.id)))}>Compartir</button>
-              </div>
-            )}
-
-            {meDeben.length===0 ? (
-              <div className="empty-state">Nadie te debe nada.</div>
-            ) : (
-              meDebenGroups.map(group => (
-                <div key={group.date}>
-                  <div className="day-head">
-                    <span>{dayHeaderLabel(group.date)}</span>
-                    <span style={{color:"#b45309"}}>{fmt(group.items.reduce((s,e)=>s+owedForExp(e),0))}</span>
+            {debemos.map(d => (
+              <div key={d.who} style={{marginBottom:22}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,margin:"4px 0 10px"}}>
+                  <div>
+                    <div style={{fontSize:16,fontWeight:700}}>{d.who} debe</div>
+                    <div style={{fontSize:12,color:"#64748b"}}>{d.items.length} {d.items.length===1?"gasto":"gastos"} · <b style={{color:"#b45309"}}>{fmt(d.total)}</b></div>
                   </div>
-                  {group.items.map(ex => ExpenseRow(ex, {showAdded:false, selectable:true, showSource:true}))}
+                  {d.items.length>0 && (
+                    <div style={{display:"flex",gap:6}}>
+                      <button className="btn btn-g btn-sm" onClick={()=>shareSelected([d])}>Compartir</button>
+                      <button className="btn btn-amber btn-sm" onClick={()=>setConfirmBulkPaid({who:d.who, items:d.items})}>Todo repuesto</button>
+                    </div>
+                  )}
                 </div>
-              ))
-            )}
+                {d.items.length===0
+                  ? <div className="empty-state" style={{padding:"14px 0"}}>{d.who} no debe nada.</div>
+                  : d.groups.map(group => (
+                    <div key={group.date}>
+                      <div className="day-head">
+                        <span>{dayHeaderLabel(group.date)}</span>
+                        <span style={{color:"#b45309"}}>{fmt(group.items.reduce((s,e)=>s+debtOf(e, d.who),0))}</span>
+                      </div>
+                      {group.items.map(ex => ExpenseRow(ex, {showAdded:false, showSource:true, person:d.who}))}
+                    </div>
+                  ))}
+              </div>
+            ))}
           </div>
         )}
 
@@ -2701,7 +2675,7 @@ function App() {
               <div className="chart-card">
                 <div className="chart-legend">
                   <span><span className="sw" style={{background:"#0f4c81"}}></span>Gastos</span>
-                  <span><span className="sw" style={{background:"#b45309"}}></span>Me deben</span>
+                  <span><span className="sw" style={{background:"#b45309"}}></span>Debemos</span>
                 </div>
                 <svg viewBox="0 0 320 150" width="100%" height="150">
                   <line x1="30" y1="10" x2="30" y2="118" stroke="#e2e8f0" strokeWidth="1"/>
@@ -2733,7 +2707,7 @@ function App() {
               const monthExps = cardExpenses.filter(e=>getMonth(e.date)===month);
               const total = monthExps.reduce((s,e)=>s+e.amount,0);
               const pending = monthExps.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0);
-              const owedTotal = monthExps.reduce((s,e)=>s+owedForExp(e),0);
+              const owedTotal = monthExps.reduce((s,e)=>s+debtTotalOf(e),0);
               const net = total - owedTotal;
               const prevMonth = months[monthIdx + 1];
               const prevTotal = prevMonth ? cardExpenses.filter(e=>getMonth(e.date)===prevMonth).reduce((s,e)=>s+e.amount,0) : 0;
@@ -2770,7 +2744,7 @@ function App() {
                       <div style={{fontSize:15,fontWeight:700,color:"#0f4c81"}}>{fmt(pending)}</div>
                     </div>
                     <div style={{background:"#fffbeb",borderRadius:8,padding:"8px 10px"}}>
-                      <div style={{fontSize:9,color:"#b45309",letterSpacing:1,fontWeight:600,marginBottom:2}}>ME DEBEN</div>
+                      <div style={{fontSize:9,color:"#b45309",letterSpacing:1,fontWeight:600,marginBottom:2}}>DEBEMOS</div>
                       <div style={{fontSize:15,fontWeight:700,color:"#b45309"}}>{fmt(owedTotal)}</div>
                     </div>
                   </div>

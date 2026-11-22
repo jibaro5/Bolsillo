@@ -1,9 +1,9 @@
-// Lo que le toca a cada quien de un gasto (Omar y Shelsy), sin React ni red para poder probarlo aparte.
+// Lo que cada quien le debe a la cuenta en conjunto (Omar y Shelsy), sin React ni red para poder probarlo aparte.
 //
-// Quien pagó se queda con el monto menos todo lo que otros le deben; cada persona nombrada en "Me deben"
-// suma su parte. Lo que debe una tercera persona (Mamá, un amigo) no cuenta para ninguno de los dos.
+// En un gasto, "Alguien debe" anota a nombre de quién queda una parte que hay que reponer a la cuenta en conjunto.
+// Solo cuentan Omar y Shelsy: lo que deba una tercera persona se cuadra aparte y no se muestra.
 
-export const PEOPLE = ["Omar", "Shelsy"];
+export const DEBTORS = ["Omar", "Shelsy"];
 
 // Los nombres a mano no siempre vienen completos: en el Sheet Shelsy aparece como "Shel" (156 veces).
 export function personOf(name) {
@@ -13,20 +13,15 @@ export function personOf(name) {
   return null;
 }
 
-// Quién registró el gasto. Los viejos no tienen nombre (eran de Omar) y unos pocos traen un número en esa columna.
-export const payerOf = by => personOf(by) || "Omar";
-
-export function sharesOf(expense) {
-  const shares = { Omar: 0, Shelsy: 0 };
+// Cuánto de ese gasto está anotado a nombre de `who`.
+export function debtOf(expense, who) {
   const owed = Array.isArray(expense.owed) ? expense.owed : [];
-  let owedTotal = 0;
-  for (const p of owed) {
-    const amt = parseFloat(p.value) || 0;
-    owedTotal += amt;
-    const who = personOf(p.name);
-    if (who) shares[who] += amt;
-  }
-  const amount = Number(expense.amount) || 0;
-  shares[payerOf(expense.by)] += amount > 0 ? Math.max(0, amount - owedTotal) : amount - owedTotal;
-  return shares;
+  return owed.reduce((sum, p) => (personOf(p.name) === who ? sum + (parseFloat(p.value) || 0) : sum), 0);
 }
+
+// Lo que Omar y Shelsy deben juntos en ese gasto.
+export const debtTotalOf = expense => DEBTORS.reduce((sum, who) => sum + debtOf(expense, who), 0);
+
+// Gastos con algo pendiente a nombre de `who` (los ya repuestos no cuentan).
+export const pendingFor = (expenses, who) => expenses.filter(e => !e.paid && debtOf(e, who) > 0);
+export const totalFor = (items, who) => items.reduce((sum, e) => sum + debtOf(e, who), 0);

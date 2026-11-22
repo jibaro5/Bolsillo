@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { lineAmount } from "./budgetMath.js";
-import { sharesOf } from "./shares.js";
+import { pendingFor, totalFor } from "./shares.js";
 import { getBudgetCache, setBudgetCache } from "./budgetCache.js";
 
 // Dashboard: budget proportions (doughnut), spending so far this month by
@@ -158,7 +158,7 @@ const readOpen = () => {
   catch { return { best: true, inbox: true, cur: true, last: true }; }
 };
 
-export default function Dashboard({ onGo, renderInbox, expenses, cards, recommendations, fmt, catEmoji, categories, owedFor, porPagar, todayStr, fetcher, scriptUrl }) {
+export default function Dashboard({ onGo, renderInbox, expenses, cards, recommendations, fmt, catEmoji, categories, owedFor, todayStr, fetcher, scriptUrl }) {
   const [budget, setBudget] = useState(null); // { lines } | "none"
   const [open, setOpen] = useState(readOpen);
   const toggle = id => setOpen(o => {
@@ -197,25 +197,22 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
     const rows = expenses.filter(e => String(e.date).slice(0, 7) === key);
     const byCat = {}, byAcct = {};
     let gross = 0, owed = 0;
-    const byPerson = { Omar: 0, Shelsy: 0 };
     for (const e of rows) {
       const o = owedFor(e);
       gross += e.amount; owed += o;
-      const share = sharesOf(e);
-      byPerson.Omar += share.Omar; byPerson.Shelsy += share.Shelsy;
       const c = canonCat(e.category, categories);
       byCat[c] = (byCat[c] || 0) + e.amount;
       byAcct[e.account] = (byAcct[e.account] || 0) + e.amount;
     }
-    return { count: rows.length, gross, owed, net: gross - owed, byCat, byAcct, byPerson };
+    return { count: rows.length, gross, owed, net: gross - owed, byCat, byAcct };
   };
   const cur = useMemo(() => sumMonth(thisKey), [expenses, thisKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const last = useMemo(() => sumMonth(lastKey), [expenses, lastKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const prev = useMemo(() => sumMonth(prevKey), [expenses, prevKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Lo que falta por marcar como ingresado (todas las tarjetas) y lo que otros te deben: dos accesos bajo los tres cuadros.
-  const porIngresar = expenses.filter(e => !e.added).reduce((s, e) => s + e.amount, 0);
-  const meDeben = expenses.filter(e => !e.paid).reduce((s, e) => s + owedFor(e), 0);
+  // Los tres cuadros: lo que falta por ingresar en la cuenta en conjunto y lo que cada quien le debe (aún sin reponer).
+  const porIngresar = expenses.filter(e => !e.added).reduce((sum, e) => sum + e.amount, 0);
+  const debe = { Omar: totalFor(pendingFor(expenses, "Omar"), "Omar"), Shelsy: totalFor(pendingFor(expenses, "Shelsy"), "Shelsy") };
 
   const catSlices = obj => Object.entries(obj)
     .filter(([, v]) => v > 0.005)
@@ -234,29 +231,18 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
 
   return (
     <div style={{ marginBottom: 20 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
-        <div className="stat amber" style={{ padding: "10px 12px" }}>
-          <div className="stat-label">POR PAGAR</div>
-          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(porPagar)}</div>
-          <div className="stat-sub">tarjetas</div>
-        </div>
-        <div className="stat blue" style={{ padding: "10px 12px" }}>
-          <div className="stat-label">GASTOS OMAR</div>
-          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(cur.byPerson.Omar)}</div>
-          <div className="stat-sub">{MONTHS[Number(thisKey.slice(5)) - 1]}</div>
-        </div>
-        <div className="stat rose" style={{ padding: "10px 12px" }}>
-          <div className="stat-label">GASTOS SHELSY</div>
-          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(cur.byPerson.Shelsy)}</div>
-          <div className="stat-sub">{MONTHS[Number(thisKey.slice(5)) - 1]}</div>
-        </div>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
-        <button type="button" className="dash-link blue" onClick={() => onGo("list")}>
-          <span><span className="dash-link-l">POR INGRESAR</span><b>{fmt(porIngresar)}</b></span><span>›</span>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+        <button type="button" className="stat slate" style={{ padding: "10px 12px", textAlign: "left", cursor: "pointer", font: "inherit" }} onClick={() => onGo("list")}>
+          <div className="stat-label">POR INGRESAR</div>
+          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(porIngresar)}</div>
         </button>
-        <button type="button" className="dash-link amber" onClick={() => onGo("medeben")}>
-          <span><span className="dash-link-l">TE DEBEN</span><b>{fmt(meDeben)}</b></span><span>›</span>
+        <button type="button" className="stat blue" style={{ padding: "10px 12px", textAlign: "left", cursor: "pointer", font: "inherit" }} onClick={() => onGo("medeben")}>
+          <div className="stat-label">OMAR DEBE</div>
+          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(debe.Omar)}</div>
+        </button>
+        <button type="button" className="stat rose" style={{ padding: "10px 12px", textAlign: "left", cursor: "pointer", font: "inherit" }} onClick={() => onGo("medeben")}>
+          <div className="stat-label">SHELSY DEBE</div>
+          <div className="stat-value" style={{ fontSize: 15 }}>{fmt(debe.Shelsy)}</div>
         </button>
       </div>
 
