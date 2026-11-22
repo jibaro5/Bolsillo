@@ -58,7 +58,8 @@ export default function Accounts({ fetcher, showToast, me }) {
       await load();
       return out;
     } catch (err) {
-      showToast(ERR[err.message] || "No se pudo completar", "warn");
+      console.error(err);
+      showToast(ERR[err.message] || `No se pudo completar (${String(err.message || err.name || "error").slice(0, 80)})`, "warn");
       return null;
     } finally { setBusy(false); }
   }

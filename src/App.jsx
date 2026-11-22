@@ -2977,7 +2977,7 @@ function LoginGate({ onLogin }) {
     : err.message === "invalid_setup_code" ? "Código incorrecto, usado o vencido"
     : err.message === "blocked" ? "Esta cuenta está bloqueada"
     : err.message === "missing_userLabel" ? "Escribe también tu nombre"
-    : (err.message || "No se pudo completar");
+    : `No se pudo completar (${String(err.message || err.name || "error").slice(0, 80)})`;
 
   async function handlePasskeyLogin(intent = "dashboard") {
     setBusy(true); setError("");
