@@ -57,7 +57,8 @@ export default async function handler(req, res) {
     const target = await getUser(label, { fresh: true });
     if (!target) return res.status(404).json({ error: "user_not_found" });
     const isSelf = same(target.userLabel, admin.userLabel);
-    const isLastAdmin = target.rol === "admin" && target.estado === "activo" && (await adminCount()) <= 1;
+    // Solo se consulta cuando la acción lo necesita (cada lectura cuenta para el límite por minuto de Google).
+    const isLastAdmin = ["user-block", "user-delete"].includes(action) && target.rol === "admin" && target.estado === "activo" && (await adminCount()) <= 1;
 
     if (action === "password-reset") {
       // Un código de un solo uso para que esa persona ponga una contraseña nueva (o registre su Face ID otra vez).

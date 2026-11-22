@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, Fragment } from "react";
+import { setBudgetCache, clearBudgetCache } from "./budgetCache.js";
 import {
   KINDS, lineAmount, annualFromPeriod, budgetPeriod, shiftPeriod,
   spentFor, budgetStatus, planTotals, moveLine,
@@ -81,6 +82,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
   const [searchFocus, setSearchFocus] = useState(false);
 
   async function post(action, payload) {
+    clearBudgetCache();
     const res = await fetcher(scriptUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, ...payload }) });
     const out = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(out.error || `${action} failed`);
@@ -91,6 +93,7 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
       const res = await fetcher(`${scriptUrl}?action=budget-list`);
       if (!res.ok) throw new Error(`budget-list ${res.status}`);
       const out = await res.json();
+      setBudgetCache(out);
       setData({ lines: out.lines || [], config: out.config || { sueldoNetoAnual: 0, anclaPago: "", fondoMeses: 3 }, ingresos: out.ingresos || [] });
       setState("ok");
     } catch (err) {

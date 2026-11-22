@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { lineAmount } from "./budgetMath.js";
 import { sharesOf } from "./shares.js";
+import { getBudgetCache, setBudgetCache } from "./budgetCache.js";
 
 // Dashboard: budget proportions (doughnut), spending so far this month by
 // category, best card today, the three money tiles (por pagar, gastos de Omar y de Shelsy) and last month's summary.
@@ -170,9 +171,12 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
     let alive = true;
     (async () => {
       try {
+        const cached = getBudgetCache();
+        if (cached) { setBudget({ lines: cached.lines || [] }); return; }
         const res = await fetcher(`${scriptUrl}?action=budget-list`);
         if (!res.ok) throw new Error(String(res.status));
         const out = await res.json();
+        setBudgetCache(out);
         if (alive) setBudget({ lines: out.lines || [] });
       } catch (err) {
         console.warn("budget not available for dashboard", err);
