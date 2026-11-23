@@ -16,17 +16,17 @@
   // [dias atras, descripcion, monto, categoria, registro, deben, agregado, pagado]
   var chase = [
     [0, "Publix", 96.40, "Super", "Omar", "Shelsy: $48.20", "NO", "NO"],
-    [1, "Shell", 42.00, "Gas", "Shelsy", "Omar: $21.00", "NO", "NO"],
+    [1, "Shell", 42.00, "Misceláneo", "Shelsy", "Omar: $21.00", "NO", "NO"],
     [4, "Starbucks Coffee", 12.95, "Comida", "Shelsy", "", "NO", "NO"],
     [4, "Island Ice", 11.18, "Comida", "Omar", "", "NO", "NO"],
-    [6, "Cinemark", 34.50, "Ocio", "Omar", "Shelsy: $17.25", "NO", "NO"],
-    [9, "Walgreens", 23.14, "Salud", "Shelsy", "", "SI", "NO"],
-    [11, "Amazon", 58.99, "Compras", "", "", "SI", "NO"],
+    [6, "Cinemark", 34.50, "Free spending Omar", "Omar", "Shelsy: $17.25", "NO", "NO"],
+    [9, "Walgreens", 23.14, "Misceláneo", "Shelsy", "", "SI", "NO"],
+    [11, "Amazon", 58.99, "Free spending Omar", "", "", "SI", "NO"],
     [13, "Pollo Tropical", 27.80, "Comida", "Omar", "", "SI", "NO"],
     [15, "Publix", 112.37, "Super", "Shelsy", "", "SI", "NO"],
-    [18, "Uber", 18.60, "Otro", "Omar", "", "SI", "NO"],
-    [21, "Texaco", 39.25, "Gas", "", "", "SI", "NO"],
-    [24, "Target", 64.12, "Compras", "Shelsy", "", "SI", "NO"],
+    [18, "Uber", 18.60, "Misceláneo", "Omar", "", "SI", "NO"],
+    [21, "Texaco", 39.25, "Misceláneo", "", "", "SI", "NO"],
+    [24, "Target", 64.12, "Free spending Shelsy", "Shelsy", "", "SI", "NO"],
     [27, "Café Don Pablo", 15.40, "Comida", "Omar", "Mamá: $15.40", "SI", "NO"],
     [30, "Publix", 101.88, "Super", "", "", "SI", "NO"]
   ];
@@ -35,13 +35,13 @@
     [3, "Costco", 143.26, "Super", "Shelsy", "", "NO", "NO"],
     [7, "Spotify", 11.99, "Gastos fijos", "", "", "SI", "NO"],
     [8, "Chick-fil-A", 21.35, "Comida", "Omar", "", "SI", "NO"],
-    [10, "CVS", 17.90, "Salud", "Shelsy", "", "SI", "NO"],
-    [14, "Home Depot", 78.40, "Compras", "", "", "SI", "NO"],
-    [17, "Shell", 44.10, "Gas", "Omar", "", "SI", "NO"],
+    [10, "CVS", 17.90, "Misceláneo", "Shelsy", "", "SI", "NO"],
+    [14, "Home Depot", 78.40, "Free spending Omar", "", "", "SI", "NO"],
+    [17, "Shell", 44.10, "Misceláneo", "Omar", "", "SI", "NO"],
     [20, "Publix", 88.65, "Super", "Shelsy", "", "SI", "NO"],
     [23, "Restaurante El Mesón", 96.00, "Comida", "Omar", "Shelsy: $48.00, Mamá: $24.00", "SI", "NO"],
     [26, "Disney+", 13.99, "Gastos fijos", "Shelsy", "", "SI", "NO"],
-    [33, "Delta Airlines", 286.40, "Viaje", "Omar", "", "SI", "NO"]
+    [33, "Delta Airlines", 286.40, "Misceláneo", "Omar", "", "SI", "NO"]
   ];
   var toRows = function (list) {
     return list.map(function (r) {
@@ -70,11 +70,12 @@
   var budget = {
     lines: [
       ["ppto-1", "esencial", "Renta", 14400, [], 1], ["ppto-2", "esencial", "Phone", 1200, [], 2],
-      ["ppto-3", "esencial", "Groceries", 6600, ["Super"], 3], ["ppto-4", "esencial", "Gasolina", 2400, ["Gas"], 4],
-      ["ppto-5", "esencial", "Seguro médico", 1800, ["Salud"], 5], ["ppto-6", "esencial", "Servicios del hogar", 2400, [], 6],
-      ["ppto-7", "no_esencial", "Comida afuera", 6000, ["Comida"], 7], ["ppto-8", "no_esencial", "Entretenimiento", 6000, ["Ocio", "Compras", "Otro"], 8],
-      ["ppto-9", "no_esencial", "Suscripciones", 1200, ["Gastos fijos"], 9], ["ppto-10", "no_esencial", "Gym", 1500, [], 10],
-      ["ppto-11", "ahorro", "Ahorro (HYSA)", 36000, [], 11], ["ppto-12", "ahorro", "Vacaciones", 3600, ["Viaje"], 12]
+      ["ppto-3", "esencial", "Groceries", 6600, ["Super"], 3], ["ppto-4", "esencial", "Gasolina", 2400, [], 4],
+      ["ppto-5", "esencial", "Seguro médico", 1800, [], 5], ["ppto-6", "esencial", "Servicios del hogar", 2400, [], 6],
+      ["ppto-7", "no_esencial", "Comida afuera", 6000, ["Comida"], 7], ["ppto-8", "no_esencial", "Free spending Omar", 3000, ["Free spending Omar"], 8],
+      ["ppto-9", "no_esencial", "Suscripciones", 1200, ["Gastos fijos"], 9], ["ppto-10", "no_esencial", "Gym", 1500, ["Gastos fijos"], 10],
+      ["ppto-11", "ahorro", "Ahorro (HYSA)", 36000, [], 11], ["ppto-12", "ahorro", "Vacaciones", 3600, [], 12],
+      ["ppto-13", "no_esencial", "Free spending Shelsy", 3000, ["Free spending Shelsy"], 13]
     ].map(function (l) { return { rowNum: l[5] + 1, id: l[0], grupo: l[1], nombre: l[2], anual: l[3], categorias: l[4], nota: "", orden: l[5], createdAt: "", fijo: ["ppto-1", "ppto-2", "ppto-5", "ppto-9", "ppto-10"].indexOf(l[0]) >= 0 }; }),
     config: { sueldoNetoAnual: 96000, anclaPago: anchor, titulo: "Presupuesto de ejemplo", fondoMeses: 3 },
     ingresos: [

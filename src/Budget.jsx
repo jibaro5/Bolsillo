@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, Fragment } from "react";
 import { setBudgetCache, clearBudgetCache } from "./budgetCache.js";
+import { sameCategory } from "./categories.js";
 import {
   KINDS, lineAmount, annualFromPeriod, budgetPeriod, shiftPeriod,
   spentFor, budgetStatus, planTotals, moveLine,
@@ -558,6 +559,23 @@ export default function Budget({ expenses, fetcher, showToast, owedFor, categori
               <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 6 }}>Cambia cualquiera de los tres y los otros se ajustan solos (anual ÷ 12 = mensual, anual ÷ 26 = bisemanal).</div>
             </div>
 
+
+            <div className="field"><label>Categoría de gastos (Dashboard)</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {categories.map(c => {
+                  const on = form.categorias.some(x => sameCategory(x, c));
+                  return (
+                    <button key={c} type="button" aria-pressed={on} className={`bd-pill ${on ? "on" : ""}`}
+                      onClick={() => setForm(f => ({ ...f, categorias: on ? f.categorias.filter(x => !sameCategory(x, c)) : [...f.categorias, c] }))}>
+                      {catEmoji[c]} {c}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 6 }}>
+                En "Gastos actuales · bisemana" del Dashboard, el presupuesto de cada categoría es la suma de las líneas que la tengan marcada. Puedes marcar varias líneas en la misma categoría.
+              </div>
+            </div>
 
             <div className="field"><label>Nota (opcional)</label>
               <input className="inp" value={form.nota} onChange={e => setForm(f => ({ ...f, nota: e.target.value }))} placeholder="Ej. se paga el 1 de cada mes" />

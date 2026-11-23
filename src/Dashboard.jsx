@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
-import { lineAmount } from "./budgetMath.js";
+import { lineAmount, budgetPeriod, budgetStatus } from "./budgetMath.js";
 import { pendingFor, totalFor } from "./shares.js";
+import { CATEGORIES, canonCategory, sameCategory } from "./categories.js";
 import { getBudgetCache, setBudgetCache } from "./budgetCache.js";
 
 // Dashboard: budget proportions (doughnut), spending so far this month by
@@ -10,9 +11,10 @@ import { getBudgetCache, setBudgetCache } from "./budgetCache.js";
 
 const MONTHS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const CAT_COLORS = {
-  "Comida": "#f59e0b", "Super": "#10b981", "Gas": "#ef4444", "Ocio": "#8b5cf6", "Viaje": "#06b6d4",
-  "Salud": "#ec4899", "Compras": "#3b82f6", "Gastos fijos": "#64748b", "Otro": "#94a3b8",
+  "Comida": "#f59e0b", "Super": "#10b981", "Gastos fijos": "#64748b",
+  "Free spending Omar": "#3b82f6", "Free spending Shelsy": "#ec4899", "Misceláneo": "#94a3b8",
 };
+const STATUS_COLOR = { ok: "#16a34a", warn: "#d97706", over: "#dc2626" };
 const GROUP_SLICES = [
   { id: "esencial", label: "Esenciales", color: "#0f4c81" },
   { id: "no_esencial", label: "No esenciales", color: "#b45309" },
@@ -25,14 +27,6 @@ const monthKey = (dateStr, offset = 0) => {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 };
 const monthName = key => { const [y, m] = key.split("-").map(Number); return `${MONTHS[m - 1]} ${y}`; };
-// Category as stored ("Comida", "🍽️ Comida", "comida") -> canonical name.
-const canonCat = (c, known) => {
-  const t = String(c || "").trim();
-  if (!t) return "Otro";
-  const hit = known.find(k => t.toLowerCase().endsWith(k.toLowerCase()));
-  return hit || t;
-};
-
 // Doughnut (hole 50 %, percentage labels inside the ring), like the chart in the sheet.
 export function Donut({ slices, center, size = 150 }) {
   const total = slices.reduce((s, x) => s + x.value, 0);
@@ -154,12 +148,12 @@ export function GoLink({ label, onClick }) {
 
 const OPEN_KEY = "bolsillo_dash_open";
 const readOpen = () => {
-  try { return { best: true, inbox: true, cur: true, last: true, ...JSON.parse(localStorage.getItem(OPEN_KEY) || "{}") }; }
-  catch { return { best: true, inbox: true, cur: true, last: true }; }
+  try { return { best: true, inbox: true, bis: true, cur: true, ...JSON.parse(localStorage.getItem(OPEN_KEY) || "{}") }; }
+  catch { return { best: true, inbox: true, bis: true, cur: true }; }
 };
 
 export default function Dashboard({ onGo, renderInbox, expenses, cards, recommendations, fmt, catEmoji, categories, owedFor, todayStr, fetcher, scriptUrl }) {
-  const [budget, setBudget] = useState(null); // { lines } | "none"
+  const [budget, setBudget] = useState(null); // { lines, config } | "none"
   const [open, setOpen] = useState(readOpen);
   const toggle = id => setOpen(o => {
     const next = { ...o, [id]: !o[id] };
@@ -172,12 +166,12 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
     (async () => {
       try {
         const cached = getBudgetCache();
-        if (cached) { setBudget({ lines: cached.lines || [] }); return; }
+        if (cached) { setBudget({ lines: cached.lines || [], config: cached.config || {} }); return; }
         const res = await fetcher(`${scriptUrl}?action=budget-list`);
         if (!res.ok) throw new Error(String(res.status));
         const out = await res.json();
         setBudgetCache(out);
-        if (alive) setBudget({ lines: out.lines || [] });
+        if (alive) setBudget({ lines: out.lines || [], config: out.config || {} });
       } catch (err) {
         console.warn("budget not available for dashboard", err);
         if (alive) setBudget("none");
@@ -187,8 +181,6 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const thisKey = monthKey(todayStr);
-  const lastKey = monthKey(todayStr, -1);
-  const prevKey = monthKey(todayStr, -2);
 
   const cardName = id => id === "debit" ? "Débito" : (cards.find(c => c.id === id)?.nombre || id);
   const cardColor = id => id === "debit" ? "#475569" : (cards.find(c => c.id === id)?.color || "#0f4c81");
@@ -200,15 +192,13 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
     for (const e of rows) {
       const o = owedFor(e);
       gross += e.amount; owed += o;
-      const c = canonCat(e.category, categories);
+      const c = canonCategory(e.category);
       byCat[c] = (byCat[c] || 0) + e.amount;
       byAcct[e.account] = (byAcct[e.account] || 0) + e.amount;
     }
     return { count: rows.length, gross, owed, net: gross - owed, byCat, byAcct };
   };
   const cur = useMemo(() => sumMonth(thisKey), [expenses, thisKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const last = useMemo(() => sumMonth(lastKey), [expenses, lastKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const prev = useMemo(() => sumMonth(prevKey), [expenses, prevKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Los tres cuadros: lo que falta por ingresar en la cuenta en conjunto y lo que cada quien le debe (aún sin reponer).
   const porIngresar = expenses.filter(e => !e.added).reduce((sum, e) => sum + e.amount, 0);
@@ -219,15 +209,23 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
     .sort((a, b) => b[1] - a[1])
     .map(([c, v]) => ({ label: c, value: v, color: CAT_COLORS[c] || "#94a3b8", emoji: catEmoji[c] }));
   const curSlices = catSlices(cur.byCat);
-  const lastSlices = catSlices(last.byCat);
 
   const groupSlices = budget && budget !== "none"
     ? GROUP_SLICES.map(g => ({ ...g, value: budget.lines.filter(l => l.grupo === g.id).reduce((s, l) => s + (Number(l.anual) || 0), 0) })).filter(s => s.value > 0)
     : [];
   const planAnual = groupSlices.reduce((s, x) => s + x.value, 0);
 
-  const diff = last.gross - prev.gross;
-  const diffPct = prev.gross > 0 ? Math.abs(diff / prev.gross * 100).toFixed(0) : null;
+
+  // Gastos de la bisemana actual por categoría frente a lo presupuestado (las quincenas se cuentan de 14 en 14 desde un día de pago).
+  const budgetReady = budget && budget !== "none";
+  const period = budgetReady ? budgetPeriod("bisemanal", todayStr, budget.config?.anclaPago || "") : null;
+  const bisRows = period ? CATEGORIES.map(cat => {
+    const spent = expenses.filter(e => e.date >= period.start && e.date <= period.end && canonCategory(e.category) === cat).reduce((sum, e) => sum + e.amount, 0);
+    const planned = budget.lines.filter(l => (l.categorias || []).some(c => sameCategory(c, cat))).reduce((sum, l) => sum + lineAmount(l.anual, "bisemanal"), 0);
+    return { cat, spent, planned, pct: planned > 0 ? Math.round((spent / planned) * 100) : null, status: planned > 0 ? budgetStatus(spent, planned) : null };
+  }) : [];
+  const bisSpent = bisRows.filter(r => r.planned > 0).reduce((sum, r) => sum + r.spent, 0);
+  const bisPlanned = bisRows.reduce((sum, r) => sum + r.planned, 0);
 
   return (
     <div style={{ marginBottom: 20 }}>
@@ -246,6 +244,43 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
         </button>
       </div>
 
+      {renderInbox({ collapsed: !open.inbox, onToggle: () => toggle("inbox"), onGo: () => onGo("list", "por-revisar") })}
+
+      <Collapse title={`📊 GASTOS ACTUALES · BISEMANA${period ? " " + period.label.toUpperCase() : ""}`}
+        summary={!budgetReady ? "" : !period ? "Falta la fecha de pago" : bisPlanned > 0 ? `${fmt(bisSpent)} de ${fmt(bisPlanned)} · ${Math.round((bisSpent / bisPlanned) * 100)}%` : fmt(bisRows.reduce((sum, r) => sum + r.spent, 0))}
+        open={open.bis} onToggle={() => toggle("bis")} go={{ label: "Presupuesto", onClick: () => onGo("budget") }}>
+        {budget === null && <div style={{ fontSize: 12, color: "#94a3b8" }}>Cargando…</div>}
+        {budget === "none" && <div style={{ fontSize: 12, color: "#94a3b8" }}>No se pudo cargar el presupuesto.</div>}
+        {budgetReady && !period && (
+          <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>
+            Para contar por bisemana falta la fecha de un día de pago real. Se pone en Presupuesto, en "Ingresos, fondo y fecha de pago".
+          </div>
+        )}
+        {period && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {bisRows.map(r => (
+              <div key={r.cat}>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>{catEmoji[r.cat] || "📦"} {r.cat}</span>
+                  <span style={{ fontSize: 12, color: "#475569", fontVariantNumeric: "tabular-nums", textAlign: "right" }}>
+                    {r.planned > 0
+                      ? <><b style={{ color: STATUS_COLOR[r.status] }}>{fmt(r.spent)}</b> de {fmt(r.planned)} · <b style={{ color: STATUS_COLOR[r.status] }}>{r.pct}%</b></>
+                      : <><b>{fmt(r.spent)}</b> · sin presupuesto</>}
+                  </span>
+                </div>
+                {r.planned > 0 && (
+                  <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, r.pct)} aria-label={`${r.cat}: ${r.pct}% del presupuesto`}
+                    style={{ height: 8, background: "#f1f5f9", borderRadius: 99, overflow: "hidden", marginTop: 5 }}>
+                    <div style={{ width: `${Math.min(100, r.pct)}%`, height: "100%", background: STATUS_COLOR[r.status], borderRadius: 99, transition: "width .25s" }} />
+                  </div>
+                )}
+              </div>
+            ))}
+            <div style={{ fontSize: 10.5, color: "#94a3b8" }}>El presupuesto de cada categoría es la suma de las líneas que le asignas en Presupuesto.</div>
+          </div>
+        )}
+      </Collapse>
+
       {recommendations.length > 0 && (
         <Collapse title="💳 MEJOR TARJETA HOY" open={open.best} onToggle={() => toggle("best")} go={{ label: "Crédito", onClick: () => onGo("list", "mejor-tarjeta") }}
           summary={`${recommendations[0].categoria} · ${cards.find(c => c.id === recommendations[0].best.cardId)?.nombre || ""} ${recommendations[0].best.effectiveRate}%`}>
@@ -253,7 +288,6 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
         </Collapse>
       )}
 
-      {renderInbox({ collapsed: !open.inbox, onToggle: () => toggle("inbox"), onGo: () => onGo("list", "por-revisar") })}
 
       <Collapse title={`📆 MES ACTUAL · ${monthName(thisKey).toUpperCase()}`} summary={fmt(cur.gross)} open={open.cur} onToggle={() => toggle("cur")} go={{ label: "Presupuesto", onClick: () => onGo("budget") }}>
         <div style={{ fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 8 }}>Gastado hasta hoy, por categoría</div>
@@ -283,36 +317,6 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
         </div>
       </Collapse>
 
-      <Collapse title={`📅 MES PASADO · ${monthName(lastKey).toUpperCase()}`} summary={last.count ? fmt(last.gross) : ""} open={open.last} onToggle={() => toggle("last")} go={{ label: "Resumen", onClick: () => onGo("summary") }}>
-        {last.count === 0 ? <div style={{ fontSize: 12, color: "#94a3b8" }}>No hay gastos registrados en {monthName(lastKey)}.</div> : (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
-              <div><div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700 }}>GASTADO</div><div style={{ fontSize: 16, fontWeight: 700 }}>{fmt(last.gross)}</div></div>
-              <div><div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700 }}>ME DEBÍAN</div><div style={{ fontSize: 16, fontWeight: 700, color: "#b45309" }}>{fmt(last.owed)}</div></div>
-              <div><div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700 }}>NETO</div><div style={{ fontSize: 16, fontWeight: 700, color: "#059669" }}>{fmt(last.net)}</div></div>
-            </div>
-            {diffPct !== null && (
-              <div style={{ fontSize: 12, marginBottom: 12, color: diff > 0 ? "#dc2626" : "#059669", fontWeight: 600 }}>
-                {diff > 0 ? "▲" : "▼"} {diffPct}% {diff > 0 ? "más" : "menos"} que {monthName(prevKey)} ({fmt(prev.gross)})
-              </div>
-            )}
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-              <Donut slices={lastSlices} center={{ top: "TOTAL", main: fmt(last.gross) }} size={130} />
-              <Legend slices={lastSlices} fmt={fmt} />
-            </div>
-            <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #f1f5f9" }}>
-              {Object.entries(last.byAcct).sort((a, b) => b[1] - a[1]).map(([id, v]) => (
-                <div key={id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "3px 0" }}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: cardColor(id) }} />
-                  <span style={{ flex: 1, color: "#475569" }}>{cardName(id)}</span>
-                  <b style={{ fontVariantNumeric: "tabular-nums" }}>{fmt(v)}</b>
-                </div>
-              ))}
-              <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 4 }}>{last.count} gastos</div>
-            </div>
-          </>
-        )}
-      </Collapse>
     </div>
   );
 }

@@ -5,6 +5,7 @@ import Split from "./Split.jsx";
 import Accounts from "./Accounts.jsx";
 import { isHidden, setHidden, MASK } from "./privacy.js";
 import { DEBTORS, personOf, debtOf, debtTotalOf, pendingFor, totalFor } from "./shares.js";
+import { CATEGORIES, CAT_EMOJI, canonCategory } from "./categories.js";
 
 const SCRIPT_URL = "/api/sheet";
 // Expenses saved before "who registered it" existed have no name; they were all entered by the owner.
@@ -484,8 +485,6 @@ async function recurringDelete(item) {
   return parseJsonSafe(res);
 }
 
-const CATEGORIES = ["Comida","Super","Gas","Ocio","Viaje","Salud","Compras","Gastos fijos","Otro"];
-const CAT_EMOJI = {"Comida":"🍽️","Super":"🛒","Gas":"⛽","Ocio":"🎬","Viaje":"✈️","Salud":"🏥","Compras":"🛍️","Gastos fijos":"📅","Otro":"📦"};
 function catDisplay(c) {
   if (!c) return "";
   const trimmed = c.trim();
@@ -1226,7 +1225,8 @@ function App() {
     // an Apple Pay payment whose card was only a guess in the Shortcut starts on the main card instead.
     setFormAccount(cards.some(c => c.id === cardId) ? cardId : mainCardId);
     // Apple Pay payments arrive without a category; reuse the one last used for the same name.
-    const category = row.category || categoryByName[row.name.trim().toLowerCase()] || "";
+    const rawCategory = row.category || categoryByName[row.name.trim().toLowerCase()] || "";
+    const category = rawCategory ? canonCategory(rawCategory) : "";
     setForm({ ...EMPTY_FORM, desc: row.name, amount: String(row.amount), date: row.date, category, by: row.usuario || "" });
     setShowOwed(false);
     setShowForm(true);
@@ -1721,6 +1721,8 @@ function App() {
         .stat.amber{background:#fffbeb;border:1px solid #fde68a;}
         .stat.green{background:#f0fdf4;border:1px solid #bbf7d0;}
         .stat.rose{background:#fdf2f8;border:1px solid #fbcfe8;}
+        .brand-btn{display:flex;align-items:center;gap:10px;background:none;border:none;padding:0;cursor:pointer;font-family:inherit;color:inherit;border-radius:10px;}
+        .brand-btn:focus-visible{outline:2px solid #0f4c81;outline-offset:3px;}
         .stat.slate{background:#f1f5f9;border:1px solid #cbd5e1;}
         .stat.slate .stat-label, .stat.slate .stat-value{color:#334155;}
         .stat.rose .stat-label, .stat.rose .stat-value{color:#9d174d;}
@@ -2328,13 +2330,15 @@ function App() {
         <div style={{maxWidth:720,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between",height:58}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <button className="menu-btn" aria-label="Menú" onClick={()=>setMenuOpen(true)}>☰</button>
+            <button type="button" className="brand-btn" aria-label="Ir al Dashboard" onClick={()=>goSection("dashboard")}>
             <div style={{width:34,height:34,background:"linear-gradient(135deg,#0f4c81,#1e6ab0)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 2px 8px rgba(15,76,129,.3)"}}>
               <span style={{color:"#fff",fontSize:16,fontWeight:700}}>B</span>
             </div>
-            <div>
+            <div style={{textAlign:"left"}}>
               <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700,letterSpacing:-.3,lineHeight:1}}>Bolsillo</div>
               <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,fontWeight:600}}>{(NAV.find(n=>n.id===tab)?.label || "").toUpperCase()}{tab==="list" && activeCard ? ` · ${cardName(activeCard).toUpperCase()}` : ""}{hideNums ? " · NÚMEROS OCULTOS" : ""}</div>
             </div>
+            </button>
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
             {syncing && <span style={{fontSize:11,color:"#94a3b8",fontWeight:500}} className="pulse">Guardando...</span>}
@@ -2461,8 +2465,6 @@ function App() {
           </div>
 
           {inboxCard}
-
-          <BestCardWidget recommendations={recommendations} cards={cards} fmt={fmt} catEmoji={CAT_EMOJI} />
 
           {(
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,margin:"16px 0"}}>
@@ -2714,7 +2716,7 @@ function App() {
               const diff = total - prevTotal;
               const diffPct = prevTotal > 0 ? Math.abs(diff/prevTotal*100).toFixed(0) : null;
               const catMap = {};
-              monthExps.forEach(e=>{ const cat=catDisplay(e.category||"Otro"); catMap[cat]=(catMap[cat]||0)+e.amount; });
+              monthExps.forEach(e=>{ const cat=catDisplay(canonCategory(e.category)); catMap[cat]=(catMap[cat]||0)+e.amount; });
               const topCats = Object.entries(catMap).sort((a,b)=>b[1]-a[1]).slice(0,5);
               const top3 = [...monthExps].sort((a,b)=>b.amount-a.amount).slice(0,3);
               return (
