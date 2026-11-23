@@ -52,8 +52,8 @@
 
   // Pagos de ejemplo hechos a las tarjetas (dentro del ciclo de cada una).
   var pagos = [
-    { id: "pay-1", cardId: "discover", date: ago(1), amount: 200, note: "Pago parcial", by: "Omar" },
-    { id: "pay-2", cardId: "chase-a1xa", date: ago(2), amount: 100, note: "", by: "Shelsy" }
+    { id: "pay-1", cardId: "discover", date: ago(1), amount: 40, note: "Pago parcial", by: "Omar" },
+    { id: "pay-2", cardId: "chase-a1xa", date: ago(2), amount: 60, note: "", by: "Shelsy" }
   ];
   var recurring = [
     { id: "r1", name: "Netflix", amount: 15.49, day: "12" },

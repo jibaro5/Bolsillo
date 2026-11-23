@@ -83,13 +83,23 @@ function PayLines({ sum, fmt, dark, total, totalLabel }) {
   return (
     <div>
       {totalLabel && row(totalLabel, fmt(total), null, false)}
-      {row("POR PAGAR", fmt(sum.porPagar))}
+      {row("POR PAGAR", owedText(sum.porPagar, fmt))}
       {row("PAGADO", last ? fmt(last.amount) : "—", last ? `último pago · ${last.date.slice(5)}${last.by ? ` · ${last.by}` : ""}` : "sin pagos todavía")}
-      <div style={{borderTop:`1px solid ${c.line}`,marginTop:2,paddingTop:2}}>{row("RESTANTE", fmt(sum.restante), null, true)}</div>
+      <div style={{borderTop:`1px solid ${c.line}`,marginTop:2,paddingTop:2}}>{row("RESTANTE", owedText(sum.restante, fmt), null, true)}</div>
     </div>
   );
 }
 
+// Lo que falta por pagar; si se pagó de más no se muestra en negativo sino "a favor".
+function owedText(n, fmtFn) {
+  return n < -0.005 ? `a favor ${fmtFn(-n)}` : fmtFn(Math.max(0, n));
+}
+// "2026-11-20" -> "20 nov"
+function dueLabel(dateStr) {
+  if (!dateStr) return "";
+  const [, m, d] = dateStr.split("-").map(Number);
+  return `${d} ${MONTHS_SHORT[m-1].toLowerCase()}`;
+}
 function owedForExp(ex) {
   if (!ex.owed || !Array.isArray(ex.owed)) return 0;
   return ex.owed.reduce((s,p) => s + (parseFloat(p.value)||0), 0);
@@ -147,12 +157,13 @@ function getCycleInfo(closeDay = CLOSE_DAY, dueDay = DUE_DAY) {
   if (day <= closeDay) {
     cycleStart = new Date(year, month - 1, closeDay + 1);
     cycleEnd = new Date(year, month, closeDay);
-    dueDate = new Date(year, month + 1, dueDay);
   } else {
     cycleStart = new Date(year, month, closeDay + 1);
     cycleEnd = new Date(year, month + 1, closeDay);
-    dueDate = new Date(year, month + 2, dueDay);
   }
+  // Se paga la primera vez que cae el día de pago después de cerrar el ciclo: el mismo mes si es más tarde
+  // que el cierre (cierra el 17, paga el 20), el siguiente si es antes (cierra el 20, paga el 17).
+  dueDate = new Date(cycleEnd.getFullYear(), cycleEnd.getMonth() + (dueDay > closeDay ? 0 : 1), dueDay);
   const msPerDay = 1000 * 60 * 60 * 24;
   const daysUntilDue = Math.ceil((dueDate - now) / msPerDay);
   return {
@@ -592,6 +603,7 @@ function App() {
   const [payments, setPayments] = useState([]);   // pagos hechos a las tarjetas: { id, cardId, date, amount, note, by }
   const [showPay, setShowPay] = useState(false);
   const [showPayList, setShowPayList] = useState(false);
+  const [showPayDetail, setShowPayDetail] = useState(false);
   const [confirmPay, setConfirmPay] = useState(null);   // pago por borrar, a la espera de confirmación
   const [payForm, setPayForm] = useState({ cardId:"", amount:"", date:today(), note:"" });
   const descRef = useRef();
@@ -1694,6 +1706,8 @@ function App() {
         .sel-wrap{position:relative;}
         .sel-wrap .sel{appearance:none;-webkit-appearance:none;padding-right:38px;}
         .sel-arrow{position:absolute;right:14px;top:50%;transform:translateY(-50%);pointer-events:none;color:#64748b;font-size:14px;}
+        .pay-last{font-size:12px;color:#475569;}
+        .pay-last b{color:#0f172a;font-weight:700;}
         .pay-toggle{border:none;background:none;color:#0f4c81;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;padding:8px 4px;}
         .pay-list{margin-top:10px;border-top:1px solid #e2e8f0;padding-top:6px;}
         .pay-row{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:12px;color:#334155;}
@@ -2377,20 +2391,15 @@ function App() {
           <div className="card-stack" style={{height:isAll?"auto":150}}>
             {isAll && (
               <div className="all-hero">
-                <div className="card-label" style={{letterSpacing:1.5}}>TODAS LAS TARJETAS</div>
-                <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:10,marginTop:2}}>
-                  <div className="card-label">TOTAL DE LOS CICLOS</div>
-                  <div className="serif" style={{fontSize:28}}>{fmt(allCyclesTotal)}</div>
-                </div>
-                <div style={{marginTop:8}}><PayLines sum={paySum} fmt={fmt} dark /></div>
-                <div style={{marginTop:10,borderTop:"1px solid rgba(255,255,255,.18)",paddingTop:8}}>
+                <div className="card-label" style={{letterSpacing:1.5}}>FALTA PAGAR · TODAS LAS TARJETAS</div>
+                <div className="serif" style={{fontSize:paySum.restante < 0 ? 24 : 34,margin:"4px 0 6px"}}>{owedText(paySum.restante, fmt)}</div>
+                <div style={{marginTop:8,borderTop:"1px solid rgba(255,255,255,.18)",paddingTop:8}}>
                   {cards.map(c => (
                     <button key={c.id} type="button" className="all-row" onClick={()=>setActiveCard(c.id)}>
                       <span style={{width:9,height:9,borderRadius:"50%",background:c.color||"#0f4c81",boxShadow:"0 0 0 2px rgba(255,255,255,.7)"}}></span>
                       <span style={{flex:1,textAlign:"left"}}>{c.nombre}</span>
-                      <span style={{opacity:.75,fontSize:11}}>cierra {cycles[c.id]?.end?.slice(5)}</span>
-                      {paidIn(c.id) > 0 && <span style={{opacity:.75,fontSize:11}}>{fmt(cycleTotalOf(c.id))} − {fmt(paidIn(c.id))}</span>}
-                      <b>{fmt(cycleTotalOf(c.id) - paidIn(c.id))}</b>
+                      <span style={{opacity:.75,fontSize:11}}>vence {dueLabel(cycles[c.id]?.due)}</span>
+                      <b>{owedText(cycleTotalOf(c.id) - paidIn(c.id), fmt)}</b>
                     </button>
                   ))}
                 </div>
@@ -2414,8 +2423,8 @@ function App() {
                     )}
                   </div>
                   <div className="card-total">
-                    <div className="card-label">TOTAL CICLO</div>
-                    <div className="serif">{fmt(cycleTotal)}</div>
+                    <div className="card-label">FALTA PAGAR</div>
+                    <div className="serif" style={paySum.restante < 0 ? {fontSize:17} : undefined}>{owedText(paySum.restante, fmt)}</div>
                   </div>
                 </div>
               </div>
@@ -2423,8 +2432,10 @@ function App() {
           </div>
 
           <div className="pay-strip">
-            {!isAll && <PayLines sum={paySum} fmt={fmt} total={cycleTotal} totalLabel="TOTAL DEL CICLO" />}
-            <div className="pay-top" style={!isAll ? {marginTop:10} : undefined}>
+            {paySum.last
+              ? <div className="pay-last">Último pago: <b>{fmt(paySum.last.amount)}</b> · {dayHeaderLabel(paySum.last.date)}{isAll ? ` · ${cardName(paySum.last.cardId)}` : ""}</div>
+              : <div className="pay-last">Sin pagos registrados en este ciclo.</div>}
+            <div className="pay-top" style={{marginTop:8}}>
               <button type="button" className="btn btn-p" style={{padding:"10px 14px",fontSize:12}} onClick={openPay}>+ Registrar pago</button>
               {paySum.list.length > 0 && (
                 <button type="button" className="pay-toggle" aria-expanded={showPayList} onClick={() => setShowPayList(o => !o)}>
@@ -2444,14 +2455,22 @@ function App() {
                 ))}
               </div>
             )}
+            <button type="button" className="pay-toggle" style={{display:"block",paddingLeft:0,marginTop:2}} aria-expanded={showPayDetail} onClick={() => setShowPayDetail(o => !o)}>
+              {showPayDetail ? "Ocultar cómo sale la cuenta ▴" : "Ver cómo sale la cuenta ▾"}
+            </button>
+            {showPayDetail && (
+              <div className="pay-list" style={{borderTop:"none",paddingTop:0}}>
+                <PayLines sum={paySum} fmt={fmt} total={isAll ? allCyclesTotal : cycleTotal} totalLabel={isAll ? "TOTAL DE LOS CICLOS" : "TOTAL DEL CICLO"} />
+              </div>
+            )}
           </div>
 
           <div style={{display:"flex",gap:8,overflowX:"auto",padding:"14px 2px 12px",scrollbarWidth:"none"}}>
-            {[{id:"all",nombre:"Todas",color:"#1e293b",total:allCyclesTotal - allPaid},
-              ...cards.map(c => ({id:c.id,nombre:c.nombre,color:c.color||"#0f4c81",total:cycleTotalOf(c.id) - paidIn(c.id)}))].map(c => (
+            {[{id:"all",nombre:"Todas",color:"#1e293b"},
+              ...cards.map(c => ({id:c.id,nombre:c.nombre,color:c.color||"#0f4c81"}))].map(c => (
               <button key={c.id} className="tog chipcard" style={activeCard===c.id ? {background:c.color,color:"#fff",boxShadow:`0 6px 14px -6px ${c.color}`} : {borderLeft:`6px solid ${c.color}`}}
                 onClick={()=>setActiveCard(c.id)}>
-                <span>{c.nombre}</span><b>{fmt(c.total)}</b>
+                <span>{c.nombre}</span>
               </button>
             ))}
             <button className="tog" style={{flexShrink:0}} onClick={()=>setShowCardsModal(true)}>⚙️ Tarjetas</button>
@@ -2465,23 +2484,6 @@ function App() {
           </div>
 
           {inboxCard}
-
-          {(
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,margin:"16px 0"}}>
-              <div className="stat blue" style={{padding:"10px 12px"}}>
-                <div className="stat-label">POR INGRESAR</div>
-                <div className="stat-value" style={{fontSize:15}}>{fmt(cyclePending)}</div>
-              </div>
-              <div className="stat amber" style={{padding:"10px 12px"}}>
-                <div className="stat-label">DEBEMOS</div>
-                <div className="stat-value" style={{fontSize:15}}>{fmt(totalOwed)}</div>
-              </div>
-              <div className="stat green" style={{padding:"10px 12px"}}>
-                <div className="stat-label">NETO</div>
-                <div className="stat-value" style={{fontSize:15}}>{fmt(netCost)}</div>
-              </div>
-            </div>
-          )}
 
           {(
             <>
