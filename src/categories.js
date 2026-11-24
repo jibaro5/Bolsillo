@@ -6,7 +6,7 @@ export const CATEGORIES = ["Comida", "Super", "Gastos fijos", "Free spending Oma
 
 // Incluye los iconos de las categorías viejas para que los gastos antiguos se sigan viendo igual.
 export const CAT_EMOJI = {
-  "Comida": "🍽️", "Super": "🛒", "Gastos fijos": "📅", "Free spending Omar": "💸", "Free spending Shelsy": "✨", "Misceláneo": "📦",
+  "Comida": "🍽️", "Super": "🛒", "Gastos fijos": "📅", "Free spending Omar": "🥸", "Free spending Shelsy": "👩", "Misceláneo": "📦",
   "Gas": "⛽", "Ocio": "🎬", "Viaje": "✈️", "Salud": "🏥", "Compras": "🛍️", "Otro": "📦",
 };
 
