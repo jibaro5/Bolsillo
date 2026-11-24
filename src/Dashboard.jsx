@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { lineAmount, budgetPeriod, budgetStatus } from "./budgetMath.js";
 import { pendingFor, totalFor } from "./shares.js";
-import { CATEGORIES, canonCategory, sameCategory } from "./categories.js";
+import { CATEGORIES, splitByCategory, sameCategory } from "./categories.js";
 import { getBudgetCache, setBudgetCache } from "./budgetCache.js";
 
 // Dashboard: budget proportions (doughnut), spending so far this month by
@@ -192,8 +192,7 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
     for (const e of rows) {
       const o = owedFor(e);
       gross += e.amount; owed += o;
-      const c = canonCategory(e.category);
-      byCat[c] = (byCat[c] || 0) + e.amount;
+      for (const part of splitByCategory(e)) byCat[part.cat] = (byCat[part.cat] || 0) + part.amount;
       byAcct[e.account] = (byAcct[e.account] || 0) + e.amount;
     }
     return { count: rows.length, gross, owed, net: gross - owed, byCat, byAcct };
@@ -220,7 +219,8 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
   const budgetReady = budget && budget !== "none";
   const period = budgetReady ? budgetPeriod("bisemanal", todayStr, budget.config?.anclaPago || "") : null;
   const bisRows = period ? CATEGORIES.map(cat => {
-    const spent = expenses.filter(e => e.date >= period.start && e.date <= period.end && canonCategory(e.category) === cat).reduce((sum, e) => sum + e.amount, 0);
+    const spent = expenses.filter(e => e.date >= period.start && e.date <= period.end)
+      .reduce((sum, e) => sum + splitByCategory(e).filter(p => p.cat === cat).reduce((t, p) => t + p.amount, 0), 0);
     const planned = budget.lines.filter(l => (l.categorias || []).some(c => sameCategory(c, cat))).reduce((sum, l) => sum + lineAmount(l.anual, "bisemanal"), 0);
     return { cat, spent, planned, pct: planned > 0 ? Math.round((spent / planned) * 100) : null, status: planned > 0 ? budgetStatus(spent, planned) : null };
   }) : [];

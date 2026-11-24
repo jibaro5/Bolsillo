@@ -5,7 +5,7 @@ import Split from "./Split.jsx";
 import Accounts from "./Accounts.jsx";
 import { isHidden, setHidden, MASK } from "./privacy.js";
 import { DEBTORS, personOf, debtOf, debtTotalOf, pendingFor, totalFor } from "./shares.js";
-import { CATEGORIES, CAT_EMOJI, canonCategory } from "./categories.js";
+import { CATEGORIES, CAT_EMOJI, canonCategory, splitByCategory } from "./categories.js";
 
 const SCRIPT_URL = "/api/sheet";
 // Expenses saved before "who registered it" existed have no name; they were all entered by the owner.
@@ -2718,7 +2718,7 @@ function App() {
               const diff = total - prevTotal;
               const diffPct = prevTotal > 0 ? Math.abs(diff/prevTotal*100).toFixed(0) : null;
               const catMap = {};
-              monthExps.forEach(e=>{ const cat=catDisplay(canonCategory(e.category)); catMap[cat]=(catMap[cat]||0)+e.amount; });
+              monthExps.forEach(e=>{ splitByCategory(e).forEach(p=>{ const cat=catDisplay(p.cat); catMap[cat]=(catMap[cat]||0)+p.amount; }); });
               const topCats = Object.entries(catMap).sort((a,b)=>b[1]-a[1]).slice(0,5);
               const top3 = [...monthExps].sort((a,b)=>b.amount-a.amount).slice(0,3);
               return (
