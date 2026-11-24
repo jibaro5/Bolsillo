@@ -5,6 +5,7 @@ import { listRules, addRule, editRule, deleteRule } from "../lib/rewardsStore.js
 import { listLines, addLine, editLine, deleteLine, reorderLines, listIncomes, setIncomes, getConfig, setConfig } from "../lib/budgetStore.js";
 import { rebuildBudgetView, refreshBudgetView } from "../lib/budgetView.js";
 import { getSettings, setSetting } from "../lib/settingsStore.js";
+import { splitCategoryOwed } from "../lib/expenseCols.js";
 import { listPagos, addPago, deletePago } from "../lib/pagosStore.js";
 
 export const config = { api: { bodyParser: true } };
@@ -16,7 +17,6 @@ export const config = { api: { bodyParser: true } };
 // kept identical to the old backend so the front-end needs no changes.
 
 const SHEET_NAMES = { credit: "Credit Card", recurring: "Recurrentes" };
-const CATEGORIES = ["Comida","Super","Gas","Ocio","Viaje","Salud","Compras","Gastos fijos","Otro"];
 
 // Sheets' date epoch is 1899-12-30; 25569 is the day count from there to the
 // Unix epoch. UNFORMATTED_VALUE returns date cells as this kind of serial
@@ -49,9 +49,7 @@ async function readExpenses(sheetName) {
       const dateStr = typeof rawDate === "number" ? serialToDateStr(rawDate) : String(rawDate||"");
       const colD = String(row[3]??"");
       const colE = String(row[4]??"");
-      const dIsCategory = CATEGORIES.some(c => colD.trim() === c || colD.trim().endsWith(c));
-      const category = dIsCategory ? colD : colE;
-      const owed = dIsCategory ? colE : colD;
+      const { category, owed } = splitCategoryOwed(colD, colE);
       expenses.push({
         id: String(j+1),
         desc: String(row[0]??""),
