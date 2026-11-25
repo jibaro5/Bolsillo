@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { lineAmount, budgetPeriod, budgetStatus } from "./budgetMath.js";
 import { pendingFor, totalFor } from "./shares.js";
-import { CATEGORIES, splitByCategory, sameCategory } from "./categories.js";
+import { CATEGORIES, canonCategory, splitByCategory, sameCategory } from "./categories.js";
 import { getBudgetCache, setBudgetCache } from "./budgetCache.js";
 
 // Dashboard: budget proportions (doughnut), spending so far this month by
@@ -201,10 +201,10 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
 
   // Los tres cuadros: lo que falta por ingresar en la cuenta en conjunto y lo que cada quien le debe (aún sin reponer).
   const porIngresar = expenses.filter(e => !e.added).reduce((sum, e) => sum + e.amount, 0);
-  // Gastos fijos del mes: lo que se anotó en Crédito dentro de la categoría "Gastos fijos" (con la misma regla de reparto del
-  // resto del dashboard).
-  const fijosMes = expenses.filter(e => String(e.date).slice(0, 7) === thisKey).map(e => ({ e, parte: splitByCategory(e).filter(p => p.cat === "Gastos fijos").reduce((t, p) => t + p.amount, 0) })).filter(x => x.parte > 0);
-  const fijosTotal = fijosMes.reduce((sum, x) => sum + x.parte, 0);
+  // Gastos fijos: la suma de lo que está en la lista de Crédito con la categoría "Gastos fijos" y aún no se ha marcado
+  // como ingresado (igual que "Por ingresar", pero solo de esa categoría).
+  const fijosMes = expenses.filter(e => !e.added && canonCategory(e.category) === "Gastos fijos");
+  const fijosTotal = fijosMes.reduce((sum, e) => sum + e.amount, 0);
   const debe = { Omar: totalFor(pendingFor(expenses, "Omar"), "Omar"), Shelsy: totalFor(pendingFor(expenses, "Shelsy"), "Shelsy") };
 
   const catSlices = obj => Object.entries(obj)
