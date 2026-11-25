@@ -4,7 +4,7 @@ import Dashboard, { BestCardWidget, GoLink } from "./Dashboard.jsx";
 import Split from "./Split.jsx";
 import Accounts from "./Accounts.jsx";
 import { isHidden, setHidden, MASK } from "./privacy.js";
-import { DEBTORS, personOf, debtOf, debtTotalOf, pendingFor, totalFor } from "./shares.js";
+import { DEBTORS, personOf, debtOf, debtTotalOf, pendingFor, totalFor, freeSpendingOwner } from "./shares.js";
 import { CATEGORIES, CAT_EMOJI, canonCategory, splitByCategory } from "./categories.js";
 
 const SCRIPT_URL = "/api/sheet";
@@ -2267,6 +2267,11 @@ function App() {
                 </div>
               </div>
 
+              {freeSpendingOwner(form.category) && (
+                <div style={{fontSize:11,color:"#b45309",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:10,padding:"8px 12px",margin:"-6px 0 14px"}}>
+                  Este gasto cuenta como lo que {freeSpendingOwner(form.category)} le debe a la cuenta en conjunto, hasta que lo marques como repuesto.
+                </div>
+              )}
               <div className="field">
                 <input className="inp" placeholder="Nota (opcional)" value={form.note}
                   onChange={e=>setForm(f=>({...f,note:e.target.value}))} />
