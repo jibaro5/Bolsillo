@@ -201,6 +201,11 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
 
   // Los tres cuadros: lo que falta por ingresar en la cuenta en conjunto y lo que cada quien le debe (aún sin reponer).
   const porIngresar = expenses.filter(e => !e.added).reduce((sum, e) => sum + e.amount, 0);
+  // Gastos fijos del mes: lo que se anotó en Crédito dentro de la categoría "Gastos fijos" (con la misma regla de reparto del
+  // resto del dashboard), y de eso cuánto no se ha marcado como ingresado.
+  const fijosMes = expenses.filter(e => String(e.date).slice(0, 7) === thisKey).map(e => ({ e, parte: splitByCategory(e).filter(p => p.cat === "Gastos fijos").reduce((t, p) => t + p.amount, 0) })).filter(x => x.parte > 0);
+  const fijosTotal = fijosMes.reduce((sum, x) => sum + x.parte, 0);
+  const fijosPorIngresar = fijosMes.filter(x => !x.e.added).reduce((sum, x) => sum + x.parte, 0);
   const debe = { Omar: totalFor(pendingFor(expenses, "Omar"), "Omar"), Shelsy: totalFor(pendingFor(expenses, "Shelsy"), "Shelsy") };
 
   const catSlices = obj => Object.entries(obj)
@@ -243,6 +248,13 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
           <div className="stat-value" style={{ fontSize: 15 }}>{fmt(debe.Shelsy)}</div>
         </button>
       </div>
+      <button type="button" className="stat amber" style={{ display: "block", width: "100%", padding: "10px 14px", textAlign: "left", cursor: "pointer", font: "inherit", marginBottom: 16, marginTop: -8 }} onClick={() => onGo("list")}>
+        <div className="stat-label">GASTOS FIJOS · {MONTHS[Number(thisKey.slice(5)) - 1].toUpperCase()}</div>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div className="stat-value" style={{ fontSize: 18 }}>{fmt(fijosTotal)}</div>
+          <div style={{ fontSize: 11, color: "#b45309" }}>{fijosMes.length === 0 ? "ninguno este mes" : `por ingresar ${fmt(fijosPorIngresar)} · ${fijosMes.length} ${fijosMes.length === 1 ? "gasto" : "gastos"}`}</div>
+        </div>
+      </button>
 
       {renderInbox({ collapsed: !open.inbox, onToggle: () => toggle("inbox"), onGo: () => onGo("list", "por-revisar") })}
 
