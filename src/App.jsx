@@ -702,8 +702,8 @@ function App() {
         console.warn("Plaid state not available", err);
         return EMPTY_PLAID;
       });
-      const [recItems, rulesRows, plaidData, pagosRows, ...cardRowsList] = await Promise.all([
-        recurringRead(), rulesPromise, plaidPromise, pagosPromise, ...cardPromises,
+      const [rulesRows, plaidData, pagosRows, ...cardRowsList] = await Promise.all([
+        rulesPromise, plaidPromise, pagosPromise, ...cardPromises,
       ]);
       setRules(rulesRows);
       setPayments(pagosRows);
@@ -712,13 +712,6 @@ function App() {
       if (plaidData.items.length) syncPlaidIfDue(15 * 1000);
       const normalized = cardsRows.flatMap((c,i) => normalizeExpenseRows(cardRowsList[i], c.id));
       setExpenses(normalized);
-      setRecurring(recItems.map((r,i) => ({
-        id: r.id || String(i),
-        sheetId: r.id,
-        name: r.name,
-        amount: parseAmt(r.amount),
-        day: r.day,
-      })));
       setStatus("ok");
       showToast(`${normalized.length} gastos cargados`);
     } catch(err) {
@@ -1546,7 +1539,6 @@ function App() {
     { id:"dashboard", icon:"🏠", label:"Dashboard" },
     { id:"list", icon:"💳", label:"Crédito" },
     { id:"medeben", icon:"🤝", label:"Debemos", badge: debemosCount },
-    { id:"recurring", icon:"📅", label:"Fijos" },
     { id:"budget", icon:"💰", label:"Presupuesto" },
     { id:"split", icon:"🧾", label:"Dividir cuenta" },
     { id:"summary", icon:"📊", label:"Resumen" },
