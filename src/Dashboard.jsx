@@ -246,7 +246,7 @@ export default function Dashboard({ onGo, renderInbox, expenses, cards, recommen
           <div className="stat-label">SHELSY DEBE</div>
           <div className="stat-value" style={{ fontSize: 15 }}>{fmt(debe.Shelsy)}</div>
         </button>
-        <button type="button" className="stat amber" style={{ padding: "10px 12px", textAlign: "left", cursor: "pointer", font: "inherit" }} onClick={() => onGo("list")}>
+        <button type="button" className="stat amber" style={{ padding: "10px 12px", textAlign: "left", cursor: "pointer", font: "inherit" }} onClick={() => onGo("gastosfijos")}>
           <div className="stat-label">GASTOS FIJOS</div>
           <div className="stat-value" style={{ fontSize: 15 }}>{fmt(fijosTotal)}</div>
         </button>

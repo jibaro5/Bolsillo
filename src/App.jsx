@@ -604,6 +604,8 @@ function App() {
   const [showPay, setShowPay] = useState(false);
   const [showPayList, setShowPayList] = useState(false);
   const [showPayDetail, setShowPayDetail] = useState(false);
+  const [fijosView, setFijosView] = useState("pendientes");   // pantalla de Gastos fijos: "pendientes" | "todos"
+  const [confirmFijosAdded, setConfirmFijosAdded] = useState(false);
   const [confirmPay, setConfirmPay] = useState(null);   // pago por borrar, a la espera de confirmación
   const [payForm, setPayForm] = useState({ cardId:"", amount:"", date:today(), note:"" });
   const descRef = useRef();
@@ -953,6 +955,12 @@ function App() {
     setConfirmBulkPaid(null);
     if (!unpaid.length) return;
     bulkToggle(unpaid, "paid", `${unpaid.length} gastos marcados como repuestos`);
+  }
+
+  function markFijosAdded() {
+    setConfirmFijosAdded(false);
+    if (!fijosPend.length) return;
+    bulkToggle(fijosPend, "added", `${fijosPend.length} ${fijosPend.length === 1 ? "gasto fijo marcado" : "gastos fijos marcados"} como ingresado${fijosPend.length === 1 ? "" : "s"}`);
   }
 
   function markAllAdded() {
@@ -1428,6 +1436,11 @@ function App() {
   // "Debemos": lo que Omar y Shelsy le deben a la cuenta en conjunto y aún no han repuesto. Lo de terceros no se muestra.
   const debemos = DEBTORS.map(who => { const items = pendingFor(expenses, who); return { who, items, total: totalFor(items, who), groups: groupByDate(items) }; });
   const debemosTotal = debemos.reduce((s, d) => s + d.total, 0);
+  // Gastos fijos: lo que está en la lista de Crédito con esa categoría (por ingresar = aún sin marcar como ingresado).
+  const fijosAll = expenses.filter(e => canonCategory(e.category) === "Gastos fijos");
+  const fijosPend = fijosAll.filter(e => !e.added);
+  const fijosShown = fijosView === "todos" ? fijosAll : fijosPend;
+  const fijosGroups = groupByDate(fijosShown);
   const debemosCount = new Set(debemos.flatMap(d => d.items.map(e => e.id))).size;
 
   let filtered = cardExpenses;
@@ -2158,6 +2171,20 @@ function App() {
         </div>
       )}
 
+      {confirmFijosAdded && (
+        <div className="modal-overlay" onClick={()=>setConfirmFijosAdded(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:11,letterSpacing:2,color:"#b45309",marginBottom:12,fontWeight:700}}>MARCAR GASTOS FIJOS COMO INGRESADOS</div>
+            <div style={{fontSize:15,marginBottom:8,fontWeight:600}}>{fijosPend.length} {fijosPend.length === 1 ? "gasto" : "gastos"} · {fmt(fijosPend.reduce((sum, e) => sum + e.amount, 0))}</div>
+            <div style={{fontSize:13,color:"#64748b",marginBottom:24}}>Dejan de contar en el recuadro de Gastos fijos del Dashboard.</div>
+            <div style={{display:"flex",gap:8}}>
+              <button className="btn btn-amber" style={{flex:1}} onClick={markFijosAdded}>Si, todos ingresados</button>
+              <button className="btn btn-g" onClick={()=>setConfirmFijosAdded(false)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {confirmBulkPaid && (
         <div className="modal-overlay" onClick={()=>setConfirmBulkPaid(null)}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
@@ -2355,7 +2382,7 @@ function App() {
             </div>
             <div style={{textAlign:"left"}}>
               <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700,letterSpacing:-.3,lineHeight:1}}>Bolsillo</div>
-              <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,fontWeight:600}}>{(NAV.find(n=>n.id===tab)?.label || "").toUpperCase()}{tab==="list" && activeCard ? ` · ${cardName(activeCard).toUpperCase()}` : ""}{hideNums ? " · NÚMEROS OCULTOS" : ""}</div>
+              <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,fontWeight:600}}>{(NAV.find(n=>n.id===tab)?.label || (tab==="gastosfijos" ? "Gastos fijos" : "")).toUpperCase()}{tab==="list" && activeCard ? ` · ${cardName(activeCard).toUpperCase()}` : ""}{hideNums ? " · NÚMEROS OCULTOS" : ""}</div>
             </div>
             </button>
           </div>
@@ -2621,6 +2648,42 @@ function App() {
                   ))}
               </div>
             ))}
+          </div>
+        )}
+
+        {tab==="gastosfijos" && (
+          <div>
+            <div className="medeben-banner">
+              <div>
+                <div className="mb-label">GASTOS FIJOS {fijosView === "todos" ? "" : "POR INGRESAR"}</div>
+                <div className="serif mb-total">{fmt(fijosShown.reduce((sum, e) => sum + e.amount, 0))}</div>
+                <div className="mb-sub">{fijosShown.length} {fijosShown.length === 1 ? "gasto" : "gastos"}</div>
+              </div>
+              {fijosView === "pendientes" && fijosPend.length > 0 && (
+                <button className="btn" style={{background:"rgba(255,255,255,.2)",color:"#fff",border:"1.5px solid rgba(255,255,255,.4)",fontSize:12,padding:"10px 16px"}}
+                  onClick={()=>setConfirmFijosAdded(true)}>
+                  Todos ingresados
+                </button>
+              )}
+            </div>
+
+            <div style={{display:"flex",background:"#e2e8f0",borderRadius:20,padding:3,gap:2,marginBottom:14,width:"fit-content"}}>
+              {[["pendientes","Por ingresar"],["todos","Todos"]].map(([v,l])=>(
+                <button key={v} className={`tog ${fijosView===v?"on":""}`} style={{padding:"6px 14px",fontSize:12}} onClick={()=>setFijosView(v)}>{l}</button>
+              ))}
+            </div>
+
+            {fijosShown.length===0
+              ? <div className="empty-state">{fijosView==="pendientes" ? "No hay gastos fijos por ingresar." : "Todavía no hay gastos con la categoría Gastos fijos."}</div>
+              : fijosGroups.map(group => (
+                <div key={group.date}>
+                  <div className="day-head">
+                    <span>{dayHeaderLabel(group.date)}</span>
+                    <span style={{color:"#b45309"}}>{fmt(group.total)}</span>
+                  </div>
+                  {group.items.map(ex => ExpenseRow(ex, {showAdded:true, showSource:true}))}
+                </div>
+              ))}
           </div>
         )}
 
