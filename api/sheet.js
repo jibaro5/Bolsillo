@@ -1,4 +1,4 @@
-import { sheetsFetch, getSheetGid, rowFromUpdatedRange } from "../lib/sheetsClient.js";
+import { sheetsFetch, getSheetGid, rowFromUpdatedRange, ensureSheetExists } from "../lib/sheetsClient.js";
 import { requireAuth } from "../lib/session.js";
 import { listCards, addCard, editCard, deleteCard, getCard } from "../lib/cardsStore.js";
 import { listRules, addRule, editRule, deleteRule } from "../lib/rewardsStore.js";
@@ -16,7 +16,8 @@ export const config = { api: { bodyParser: true } };
 // respond to the first request). Every action name and JSON shape below is
 // kept identical to the old backend so the front-end needs no changes.
 
-const SHEET_NAMES = { credit: "Credit Card", recurring: "Recurrentes" };
+// "Debito" es la cuenta conjunta: gastos que salen directo de la cuenta, sin ciclo.
+const SHEET_NAMES = { credit: "Credit Card", debit: "Debito", recurring: "Recurrentes" };
 
 // Sheets' date epoch is 1899-12-30; 25569 is the day count from there to the
 // Unix epoch. UNFORMATTED_VALUE returns date cells as this kind of serial
@@ -198,9 +199,11 @@ export default async function handler(req, res) {
     else if (action === "update") { await updateExpenseStatus(SHEET_NAMES.credit, body); result = { ok:true }; }
     else if (action === "delete") { await deleteRow(SHEET_NAMES.credit, body); result = { ok:true }; }
 
-    // La pestaña Debito se eliminó. Una versión vieja de la app que aún la pida no debe volver a crearla.
-    else if (action === "debito-read") result = { expenses: [] };
-    else if (typeof action === "string" && action.startsWith("debito-")) return res.status(410).json({ error: "debito_removido" });
+    else if (action === "debito-read") result = { expenses: (await getSheetGid(SHEET_NAMES.debit)) === undefined ? [] : await readExpenses(SHEET_NAMES.debit) };
+    else if (action === "debito-append") { await ensureSheetExists(SHEET_NAMES.debit); result = await appendExpense(SHEET_NAMES.debit, body, me); }
+    else if (action === "debito-edit") { await editExpense(SHEET_NAMES.debit, body); result = { ok:true }; }
+    else if (action === "debito-update") { await updateExpenseStatus(SHEET_NAMES.debit, body); result = { ok:true }; }
+    else if (action === "debito-delete") { await deleteRow(SHEET_NAMES.debit, body); result = { ok:true }; }
 
     else if (action === "recurring-read") result = { items: await readRecurring() };
     else if (action === "recurring-append") result = await appendRecurring(body);

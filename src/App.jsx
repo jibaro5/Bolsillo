@@ -643,7 +643,7 @@ function App() {
   const accountColor = id => id === "debit" ? "#475569" : (cards.find(c => c.id === id)?.color || "#0f4c81");
 
   function cardName(accountId) {
-    if (accountId === "debit") return "Debito";
+    if (accountId === "debit") return "Débito";
     if (accountId === "all") return "Todas";
     if (accountId === "?") return "¿Tarjeta?";   // an Apple Pay payment whose card Bolsillo couldn't tell
     return cards.find(c => c.id === accountId)?.nombre || "Tarjeta";
@@ -687,6 +687,10 @@ function App() {
       // the rest of the load.
       const cardsRows = await cardsList();
       setCards(cardsRows);
+      const debitPromise = debitApi.read().catch(err => {
+        console.warn("Debito tab not available yet", err);
+        return [];
+      });
       const cardPromises = cardsRows.map(c =>
         apiFor(c.id).read().catch(err => {
           console.warn(`Card ${c.id} not available yet`, err);
@@ -702,15 +706,18 @@ function App() {
         console.warn("Plaid state not available", err);
         return EMPTY_PLAID;
       });
-      const [rulesRows, plaidData, pagosRows, ...cardRowsList] = await Promise.all([
-        rulesPromise, plaidPromise, pagosPromise, ...cardPromises,
+      const [debitRows, rulesRows, plaidData, pagosRows, ...cardRowsList] = await Promise.all([
+        debitPromise, rulesPromise, plaidPromise, pagosPromise, ...cardPromises,
       ]);
       setRules(rulesRows);
       setPayments(pagosRows);
       setPlaid(plaidData);
       retryPendingBankConnection();
       if (plaidData.items.length) syncPlaidIfDue(15 * 1000);
-      const normalized = cardsRows.flatMap((c,i) => normalizeExpenseRows(cardRowsList[i], c.id));
+      const normalized = [
+        ...cardsRows.flatMap((c,i) => normalizeExpenseRows(cardRowsList[i], c.id)),
+        ...normalizeExpenseRows(debitRows, "debit"),
+      ];
       setExpenses(normalized);
       setStatus("ok");
       showToast(`${normalized.length} gastos cargados`);
@@ -1236,7 +1243,7 @@ function App() {
     // A payment with an unrecognised card starts on the main card; it can be changed in the form.
     // Starts on the card the payment really came from (Wallet's own card name, or a mapped bank account);
     // an Apple Pay payment whose card was only a guess in the Shortcut starts on the main card instead.
-    setFormAccount(cards.some(c => c.id === cardId) ? cardId : mainCardId);
+    setFormAccount(cardId === "debit" || cards.some(c => c.id === cardId) ? cardId : mainCardId);
     // Apple Pay payments arrive without a category; reuse the one last used for the same name.
     const rawCategory = row.category || categoryByName[row.name.trim().toLowerCase()] || "";
     const category = rawCategory ? canonCategory(rawCategory) : "";
@@ -1353,7 +1360,9 @@ function App() {
   const mainCardId = cards.find(c => c.id === defaultCardId)?.id || cards[0]?.id || "discover";
   const addTo = (!activeCard || isAll) ? mainCardId : activeCard;   // where the "+" button files a new expense
   const activeCardObj = cards.find(c => c.id === activeCard);
-  const cardExpenses = isAll ? expenses : ((activeCard && activeCard !== "debit") ? expenses.filter(e => e.account === activeCard) : []);
+  const isDebit = activeCard === "debit";   // la cuenta conjunta: sin ciclo, sin pagos y sin "ingresado"
+  const cardExpenses = isAll ? expenses : (activeCard ? expenses.filter(e => e.account === activeCard) : []);
+  const debitMonthTotal = expenses.filter(e => e.account === "debit" && getMonth(e.date) === getMonth(today())).reduce((sum, e) => sum + e.amount, 0);
   const recommendations = useMemo(() => computeRecommendations(cards, rules, expenses), [cards, rules, expenses]);
 
   // Bank transactions only show up for accounts mapped to a card.
@@ -1364,7 +1373,7 @@ function App() {
   // An Apple Pay row's card is trusted only when Wallet reported it; otherwise it shows (and imports) as the main card.
   const inboxGuessed = r => !!r.applepay && r.cardSource !== "wallet";
   const inboxShownCard = r => inboxGuessed(r) ? mainCardId : inboxCardOf(r);
-  const inboxRows = plaid.inbox.filter(r => inboxCardOf(r) && inboxCardOf(r) !== "debit");
+  const inboxRows = plaid.inbox.filter(r => inboxCardOf(r));
   // Finds an expense already entered by hand that this bank transaction might
   // duplicate: same amount within 3 days, or a similar name with an amount
   // within 10% (e.g. the bank amount includes a tip).
@@ -1437,7 +1446,8 @@ function App() {
   const debemosCount = new Set(debemos.flatMap(d => d.items.map(e => e.id))).size;
 
   let filtered = cardExpenses;
-  if (filter === "pending") filtered = filtered.filter(e=>!e.added);
+  if (isDebit) { /* en la cuenta conjunta se ve todo */ }
+  else if (filter === "pending") filtered = filtered.filter(e=>!e.added);
   else if (filter === "added") filtered = filtered.filter(e=>e.added);
   if (dateFrom) filtered = filtered.filter(e=>e.date >= dateFrom);
   if (dateTo) filtered = filtered.filter(e=>e.date <= dateTo);
@@ -1476,7 +1486,8 @@ function App() {
 
   // Fila compartida para gastos de Discover/Debito y para el detalle de "Me deben".
   function ExpenseRow(ex, opts={}) {
-    const { showAdded=true, selectable=false, showSource=false, person=null } = opts;
+    const { selectable=false, showSource=false, person=null } = opts;
+    const showAdded = (opts.showAdded ?? true) && ex.account !== "debit";
     const owedAmt = person ? debtOf(ex, person) : debtTotalOf(ex);
     const hasOwed = owedAmt > 0;
     const fullyDone = showAdded ? (ex.added && (!hasOwed || ex.paid)) : (hasOwed && ex.paid);
@@ -1978,6 +1989,7 @@ function App() {
                       <select className="sel" style={{width:"auto",fontSize:12,padding:"7px 10px"}} value={a.cardId} onChange={e=>mapPlaidAccount(a.accountId, e.target.value)}>
                         <option value="">No importar</option>
                         {cards.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                        <option value="debit">Débito</option>
                       </select>
                     </div>
                   ))}
@@ -2230,6 +2242,11 @@ function App() {
                     <span className="acct-dot" style={{background:c.color||"#0f4c81"}}></span>{c.nombre}
                   </button>
                 ))}
+                <button type="button" className={`acct-btn ${formAccount==="debit"?"on":""}`}
+                  style={formAccount==="debit" ? {borderColor:"#475569", background:"#475569", color:"#fff", boxShadow:"0 6px 14px -6px #475569"} : {borderLeft:"6px solid #475569"}}
+                  onClick={()=>setFormAccount("debit")}>
+                  <span className="acct-dot" style={{background:formAccount==="debit"?"#fff":"#475569"}}></span>Débito
+                </button>
               </div>
             )}
 
@@ -2429,7 +2446,25 @@ function App() {
                 </div>
               </div>
             )}
-            {!isAll && (
+            {isDebit && (
+              <div className="stack-card front" style={{background:"linear-gradient(135deg,#334155,#0f172a)",transform:"none",cursor:"default"}}>
+                <div className="card-row1">
+                  <div><div className="card-brand">DÉBITO · CUENTA CONJUNTA</div><div className="card-chip"></div></div>
+                  <div className="card-dots">•••</div>
+                </div>
+                <div className="card-row2">
+                  <div>
+                    <div className="card-label">SIN CICLO</div>
+                    <div className="card-value">Sale al momento</div>
+                  </div>
+                  <div className="card-total">
+                    <div className="card-label">GASTADO ESTE MES</div>
+                    <div className="serif">{fmt(debitMonthTotal)}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+            {!isAll && !isDebit && (
               <div className="stack-card front"
                 style={{transform:"none",cursor:"default",background: activeCardObj?.color
                   ? `linear-gradient(135deg,${cycle.isUrgent?"#dc2626,#b91c1c":`${activeCardObj.color},${activeCardObj.color}`})`
@@ -2455,7 +2490,7 @@ function App() {
             )}
           </div>
 
-          <div className="pay-strip">
+          {!isDebit && <div className="pay-strip">
             {paySum.last
               ? <div className="pay-last">Último pago: <b>{fmt(paySum.last.amount)}</b> · {dayHeaderLabel(paySum.last.date)}{isAll ? ` · ${cardName(paySum.last.cardId)}` : ""}</div>
               : <div className="pay-last">Sin pagos registrados en este ciclo.</div>}
@@ -2487,11 +2522,12 @@ function App() {
                 <PayLines sum={paySum} fmt={fmt} total={isAll ? allCyclesTotal : cycleTotal} totalLabel={isAll ? "TOTAL DE LOS CICLOS" : "TOTAL DEL CICLO"} />
               </div>
             )}
-          </div>
+          </div>}
 
           <div style={{display:"flex",gap:8,overflowX:"auto",padding:"14px 2px 12px",scrollbarWidth:"none"}}>
             {[{id:"all",nombre:"Todas",color:"#1e293b"},
-              ...cards.map(c => ({id:c.id,nombre:c.nombre,color:c.color||"#0f4c81"}))].map(c => (
+              ...cards.map(c => ({id:c.id,nombre:c.nombre,color:c.color||"#0f4c81"})),
+              {id:"debit",nombre:"Débito",color:"#475569"}].map(c => (
               <button key={c.id} className="tog chipcard" style={activeCard===c.id ? {background:c.color,color:"#fff",boxShadow:`0 6px 14px -6px ${c.color}`} : {borderLeft:`6px solid ${c.color}`}}
                 onClick={()=>setActiveCard(c.id)}>
                 <span>{c.nombre}</span>
@@ -2512,11 +2548,11 @@ function App() {
           {(
             <>
               <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
-                <div style={{display:"flex",background:"#e2e8f0",borderRadius:20,padding:"3px",gap:2}}>
+                {!isDebit && <div style={{display:"flex",background:"#e2e8f0",borderRadius:20,padding:"3px",gap:2}}>
                   {[["all","Todos"],["pending","Pendientes"],["added","Ingresados"]].map(([v,l])=>(
                     <button key={v} className={`tog ${filter===v?"on":""}`} style={{padding:"6px 12px",fontSize:11}} onClick={()=>setFilter(v)}>{l}</button>
                   ))}
-                </div>
+                </div>}
                 {availableMonths.length > 1 && (
                   <select className="sel" value={monthFilter}
                     onChange={e=>{setMonthFilter(e.target.value);setDateFrom("");setDateTo("");}}
@@ -2563,7 +2599,7 @@ function App() {
                 </div>
               )}
 
-              <div style={{display:"flex",gap:12,marginBottom:6,fontSize:11,color:"#94a3b8",fontWeight:500}}>
+              <div style={{display:isDebit?"none":"flex",gap:12,marginBottom:6,fontSize:11,color:"#94a3b8",fontWeight:500}}>
                 <div style={{display:"flex",alignItems:"center",gap:5}}>
                   <div className="chk blue on" style={{width:16,height:16}}><span style={{fontSize:9,color:"#fff",fontWeight:800}}>v</span></div>
                   Ingresado
@@ -2584,7 +2620,7 @@ function App() {
                     {group.items.map(ex => ExpenseRow(ex, {showAdded: ex.account !== "debit", showSource: isAll}))}
                   </div>
                 ))}
-                {cardExpenses.some(e=>!e.added) && (
+                {!isDebit && cardExpenses.some(e=>!e.added) && (
                   <button className="btn btn-g" style={{width:"100%",marginTop:14,borderStyle:"dashed",fontSize:12,padding:"13px"}}
                     onClick={markAllAdded}>
                     Marcar todos como ingresados ({fmt(cardExpenses.filter(e=>!e.added).reduce((s,e)=>s+e.amount,0))})
@@ -3199,6 +3235,7 @@ function QuickAdd({ onDone }) {
             {cards.map(c => (
               <button key={c.id} type="button" className={`lg-btn ${account===c.id?"lg-btn-p":"lg-btn-g"}`} style={{marginBottom:4}} onClick={()=>setAccount(c.id)}>💳 {c.nombre}</button>
             ))}
+            <button type="button" className={`lg-btn ${account==="debit"?"lg-btn-p":"lg-btn-g"}`} onClick={()=>setAccount("debit")}>🏦 Débito</button>
             <input className="lg-input" placeholder="Descripción" value={desc} onChange={e=>setDesc(e.target.value)} required />
             <input className="lg-input" type="number" step="0.01" inputMode="decimal" placeholder="Monto" value={amount} onChange={e=>setAmount(e.target.value)} required />
             <input className="lg-input" type="date" value={date} onChange={e=>setDate(e.target.value)} required />

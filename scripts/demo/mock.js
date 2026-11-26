@@ -48,7 +48,12 @@
       return { id: String(++seq), date: ago(r[0]), desc: r[1], amount: r[2], category: r[3], note: "", owed: r[5], added: r[6], paid: r[7], registradoPor: r[4] };
     });
   };
-  var sheets = { "chase-a1xa": toRows(chase), discover: toRows(discover) };
+  var debito = [
+    [0, "Farmacia", 9.80, "Misceláneo", "Omar", "", "SI", "NO"],
+    [2, "Luz LUMA", 86.40, "Gastos fijos", "Omar", "", "SI", "NO"],
+    [5, "Panadería", 12.25, "Comida", "Shelsy", "Shelsy: $12.25", "SI", "NO"]
+  ];
+  var sheets = { "chase-a1xa": toRows(chase), discover: toRows(discover), debit: toRows(debito) };
 
   // Pagos de ejemplo hechos a las tarjetas (dentro del ciclo de cada una).
   var pagos = [
@@ -119,6 +124,7 @@
   function handleSheet(action, b, q) {
     if (action === "cards-list") return { cards: cards };
     if (action === "card-read") return { expenses: sheetFor(q.cardId).slice() };
+    if (action === "debito-read") return { expenses: sheetFor("debit").slice() };
     if (action === "pagos-list") return { pagos: pagos.slice() };
     if (action === "pagos-add") { pagos.unshift({ id: b.id, cardId: b.cardId, date: b.date, amount: b.amount, note: b.note || "", by: b.by || "" }); return { ok: true }; }
     if (action === "pagos-delete") { pagos = pagos.filter(function (x) { return x.id !== b.id; }); return { ok: true }; }
@@ -162,15 +168,15 @@
     if (action === "recurring-edit") { var ri = recurring.filter(function (x) { return x.id === String(b.id); })[0]; if (ri) { ri.name = b.name; ri.amount = b.amount; ri.day = b.day; } return { ok: true }; }
     if (action === "recurring-delete") { recurring = recurring.filter(function (x) { return x.id !== String(b.id); }); return { ok: true }; }
     // gastos: card-append/edit/update/delete (con cardId)
-    var m = /^card-(append|edit|update|delete)$/.exec(action);
+    var m = /^(card|debito)-(append|edit|update|delete)$/.exec(action);
     if (m) {
-      var list = sheetFor(b.cardId);
-      if (m[1] === "append") {
-        var row = { id: String(++seq), date: b.date, desc: b.desc, amount: b.amount, category: b.category || "", note: "", owed: b.owed || "", added: "NO", paid: "NO", registradoPor: b.registradoPor || "" };
+      var list = sheetFor(m[1] === "card" ? b.cardId : "debit");
+      if (m[2] === "append") {
+        var row = { id: String(++seq), date: b.date, desc: b.desc, amount: b.amount, category: b.category || "", note: "", owed: b.owed || "", added: m[1] === "debito" ? "SI" : "NO", paid: "NO", registradoPor: b.registradoPor || "" };
         list.push(row); return { ok: true, id: row.id };
       }
       var target = findRow(list, b.id);
-      if (m[1] === "delete") { var i = list.indexOf(target); if (i >= 0) list.splice(i, 1); return { ok: true }; }
+      if (m[2] === "delete") { var i = list.indexOf(target); if (i >= 0) list.splice(i, 1); return { ok: true }; }
       if (target) applyFields(target, b);
       return { ok: true };
     }

@@ -30,6 +30,10 @@ export function parseAmount(v) {
   return Number.isFinite(n) ? Math.abs(n) : null;
 }
 
+// La tarjeta de débito de la cuenta conjunta, con el nombre que le pone Wallet. No es una tarjeta de crédito de la
+// lista: sus pagos van a "Débito". (Chase Sapphire Preferred y Discover it se reconocen por el nombre de la tarjeta.)
+export const DEBIT_CARD = { id: "debit", nombre: "ATH Classic Plus" };
+
 // Which Bolsillo card is this? The Shortcut can send the Wallet card's own name ("Card or Pass"),
 // e.g. "Discover it Chrome" or "Chase Freedom Unlimited", or a card id. Accents, case and
 // punctuation don't matter, and either name may contain the other. The first hint that matches wins.
@@ -95,7 +99,7 @@ export default async function handler(req, res) {
     const cards = await listCards();
     // The card Wallet reports wins; the Shortcut's fixed "account" (if any) is only the fallback.
     // If neither is recognised the payment is still kept: it goes to "Por revisar" marked "¿Tarjeta?".
-    const fromWallet = resolveCard(cards, body.card, body.Card, body.cardName);
+    const fromWallet = resolveCard([...cards, DEBIT_CARD], body.card, body.Card, body.cardName);
     // Wallet's own card name is the only reliable source. Without it the payment goes to the household's main card
     // (setting "tarjetaPrincipal"), and only if none is set to the Shortcut's fixed one. Either way it can be changed on review.
     let principal = null;
